@@ -1,0 +1,39 @@
+services:
+
+  backend:
+    build: ./backend
+    container_name: finsmart-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app             
+    environment:
+      SECRET_KEY: finsmart-dev-secret-key-cambiar-en-produccion-32chars
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_DAYS: "7"
+      DATABASE_URL: sqlite:///./finsmart.db
+      PYTHONUNBUFFERED: "1"
+    command: >
+      sh -c "python seed_completo.py; uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    container_name: finsmart-frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app                   
+      - frontend_modules:/app/node_modules 
+    environment:
+      NEXT_PUBLIC_API_URL: /api 
+      WATCHPACK_POLLING: "true"          
+      CHOKIDAR_USEPOLLING: "true"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  frontend_modules:
