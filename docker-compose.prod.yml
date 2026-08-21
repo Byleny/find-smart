@@ -3,8 +3,8 @@ services:
   backend:
     build: ./backend
     container_name: finsmart-backend
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
       - backend_data:/app/data
     environment:
@@ -23,7 +23,7 @@ services:
       target: prod
     container_name: finsmart-frontend
     ports:
-      - "3000:3000"
+      - "5016:3000"
     depends_on:
       - backend
     restart: unless-stopped
