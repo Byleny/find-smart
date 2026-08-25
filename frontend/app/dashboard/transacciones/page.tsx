@@ -5,30 +5,27 @@ import { useSearchParams } from "next/navigation"
 import { useRef } from "react"
 import {
   Plus, Search, Download,
-  ShoppingCart, Home, Car, Utensils, Zap, Film, Heart, PiggyBank,
-  MoreHorizontal, ArrowUpRight, ArrowDownRight, Calendar,
+  ArrowUpRight, ArrowDownRight, Calendar,
   Loader2, Trash2, Edit2, TrendingUp, TrendingDown, Minus,
-  Sparkles, AlertTriangle, Brain, RefreshCw, History, ArrowRightLeft
+  Sparkles, AlertTriangle, History, ArrowRightLeft,
 } from "lucide-react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CurrencyInput } from "@/components/finsmart/currency-input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog"
+import { CategoryCombobox } from "@/components/finsmart/category-combobox"
 import { transactionService } from "@/lib/services/transactions"
-import type { Transaction, TrendResult, MLSuggestion, MLMetrics, AnomalyScore } from "@/lib/types"
+import { budgetService } from "@/lib/services/budgets"
+import type { Transaction, TrendResult, MLSuggestion, AnomalyScore, Budget } from "@/lib/types"
 import { formatCOP } from "@/lib/format"
-
-const categoryIcons: Record<string, React.ElementType> = {
-  "Compras": ShoppingCart, "Vivienda": Home, "Transporte": Car,
-  "Alimentación": Utensils, "Servicios": Zap, "Entretenimiento": Film, "Salud": Heart, "Ahorro": PiggyBank,
-}
+import { getCategoryIcon } from "@/lib/category-icons"
 
 const expenseCategories = ["Alimentación", "Transporte", "Vivienda", "Entretenimiento", "Servicios", "Salud", "Compras", "Ahorro", "Otros"]
 const incomeCategories = ["Salario", "Freelance", "Inversiones", "Regalos", "Ventas", "Otros"]
-const allCategories = ["Todos", ...expenseCategories]
 
 export default function TransaccionesPage() {
   return (
@@ -47,11 +44,10 @@ function TransaccionesContent() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [summary, setSummary] = useState({ total_income: 0, total_expenses: 0, balance: 0 })
+  const [budgets, setBudgets] = useState<Budget[]>([])
   const [trends, setTrends] = useState<TrendResult[]>([])
-  const [mlMetrics, setMlMetrics] = useState<MLMetrics | null>(null)
   const [anomalies, setAnomalies] = useState<Record<number, AnomalyScore>>({})
   const [suggestion, setSuggestion] = useState<MLSuggestion | null>(null)
-  const [isTraining, setIsTraining] = useState(false)
   const [reportMonth, setReportMonth] = useState(() => {
     const d = new Date()
     d.setMonth(d.getMonth() - 1)
@@ -67,6 +63,18 @@ function TransaccionesContent() {
     return Array.from(s).sort().reverse()
   }, [transactions])
 
+  // Categorías de gasto: preset + lo que ya se use en transacciones o presupuestos,
+  // para que una categoría creada en Presupuestos (ej. "Transporte público") también
+  // se sugiera aquí, y viceversa.
+  const expenseCategorySuggestions = useMemo(() => {
+    const s = new Set<string>(expenseCategories)
+    transactions.forEach(t => { if (t.type === "gasto" && t.category) s.add(t.category) })
+    budgets.forEach(b => { if (b.category) s.add(b.category) })
+    return Array.from(s).sort()
+  }, [transactions, budgets])
+
+  const allCategories = useMemo(() => ["Todos", ...expenseCategorySuggestions], [expenseCategorySuggestions])
+
   const monthlyReport = useMemo(() => {
     const tx = transactions.filter(t => t.date?.startsWith(reportMonth))
     const income   = tx.filter(t => t.type === "ingreso").reduce((s, t) => s + t.amount, 0)
@@ -81,23 +89,24 @@ function TransaccionesContent() {
 
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [form, setForm] = useState({
-    description: "", amount: "", category: "Alimentación",
+    description: "", amount: "", category: "",
     type: "gasto" as "gasto" | "ingreso", date: new Date().toISOString().slice(0, 10)
   })
 
   const load = useCallback(async () => {
     setIsLoading(true)
     try {
-      const [data, sum, trendData] = await Promise.all([
+      const [data, sum, trendData, budgetData] = await Promise.all([
         transactionService.list(),
         transactionService.summary(),
         transactionService.trends().catch(() => []),
+        budgetService.list().catch(() => []),
       ])
       setTransactions(data)
       setSummary(sum)
       setTrends(trendData as TrendResult[])
+      setBudgets(budgetData)
       // Load ML data in background
-      transactionService.mlMetrics().then(m => setMlMetrics(m)).catch(() => {})
       transactionService.mlAnomalies().then(list => {
         const map: Record<number, AnomalyScore> = {}
         list.forEach(a => { map[a.transaction_id] = a })
@@ -113,7 +122,7 @@ function TransaccionesContent() {
   useEffect(() => {
     const tipo = searchParams.get("tipo")
     if (tipo === "ingreso" || tipo === "gasto") {
-      setForm(prev => ({ ...prev, type: tipo, category: tipo === "ingreso" ? "Salario" : "Alimentación" }))
+      setForm(prev => ({ ...prev, type: tipo, category: "" }))
       setDialogOpen(true)
     }
   }, [searchParams])
@@ -138,20 +147,6 @@ function TransaccionesContent() {
     }
   }
 
-  const handleTrainModel = async () => {
-    setIsTraining(true)
-    try {
-      const m = await transactionService.mlTrain()
-      setMlMetrics(m)
-      // Refresh anomalies with new model
-      const list = await transactionService.mlAnomalies()
-      const map: Record<number, AnomalyScore> = {}
-      list.forEach(a => { map[a.transaction_id] = a })
-      setAnomalies(map)
-    } catch { /* insufficient data */ }
-    finally { setIsTraining(false) }
-  }
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
@@ -168,7 +163,7 @@ function TransaccionesContent() {
       }
       setDialogOpen(false)
       setEditingId(null)
-      setForm({ description: "", amount: "", category: "Alimentación", type: "gasto", date: new Date().toISOString().slice(0, 10) })
+      setForm({ description: "", amount: "", category: "", type: "gasto", date: new Date().toISOString().slice(0, 10) })
       await load()
     } catch {
       // error silenciado — el interceptor de Axios maneja 401
@@ -189,7 +184,7 @@ function TransaccionesContent() {
 
   const openNew = () => {
     setEditingId(null)
-    setForm({ description: "", amount: "", category: "Alimentación", type: "gasto", date: new Date().toISOString().slice(0, 10) })
+    setForm({ description: "", amount: "", category: "", type: "gasto", date: new Date().toISOString().slice(0, 10) })
     setDialogOpen(true)
   }
 
@@ -216,11 +211,11 @@ function TransaccionesContent() {
                 <label className="text-sm font-medium text-foreground">Tipo</label>
                 <div className="flex gap-2 mt-2">
                   <Button type="button" variant={form.type === "gasto" ? "default" : "outline"}
-                    onClick={() => setForm({ ...form, type: "gasto", category: "Alimentación" })} className="flex-1">
+                    onClick={() => setForm({ ...form, type: "gasto", category: "" })} className="flex-1">
                     Gasto
                   </Button>
                   <Button type="button" variant={form.type === "ingreso" ? "default" : "outline"}
-                    onClick={() => setForm({ ...form, type: "ingreso", category: "Salario" })} className="flex-1">
+                    onClick={() => setForm({ ...form, type: "ingreso", category: "" })} className="flex-1">
                     Ingreso
                   </Button>
                 </div>
@@ -251,17 +246,22 @@ function TransaccionesContent() {
               </div>
               <div>
                 <label className="text-sm font-medium text-foreground">Monto</label>
-                <Input type="number" min="0.01" step="0.01" placeholder="0.00" value={form.amount}
-                  onChange={(e) => setForm({ ...form, amount: e.target.value })} className="mt-2" required />
+                <CurrencyInput placeholder="0" value={form.amount}
+                  onValueChange={(v) => setForm({ ...form, amount: v })} className="mt-2" required />
               </div>
               <div>
                 <label className="text-sm font-medium text-foreground">Categoría</label>
-                <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}
-                  className="mt-2 w-full h-10 px-3 rounded-md border border-input bg-background text-foreground">
-                  {(form.type === "ingreso" ? incomeCategories : expenseCategories).map(c => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
+                <CategoryCombobox
+                  value={form.category}
+                  onChange={(v) => setForm({ ...form, category: v })}
+                  suggestions={form.type === "ingreso" ? incomeCategories : expenseCategorySuggestions}
+                  placeholder="Ej: Transporte público"
+                  required
+                  className="mt-2"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Elige una sugerencia o escribe una categoría propia (ej. separar Transporte en público/privado).
+                </p>
               </div>
               <div>
                 <label className="text-sm font-medium text-foreground">Fecha</label>
@@ -367,7 +367,7 @@ function TransaccionesContent() {
             ) : (
               <div className="space-y-5">
                 {/* Resumen del mes */}
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="rounded-xl bg-secondary/40 p-3 text-center">
                     <p className="text-xs text-muted-foreground mb-1">Ingresos</p>
                     <p className="text-lg font-bold text-foreground tabular-nums">
@@ -396,7 +396,7 @@ function TransaccionesContent() {
                     </p>
                     <div className="space-y-2.5">
                       {monthlyReport.categories.map(({ cat, amount, pct }) => {
-                        const Icon = categoryIcons[cat] ?? MoreHorizontal
+                        const Icon = getCategoryIcon(cat)
                         return (
                           <div key={cat}>
                             <div className="flex items-center gap-2 mb-1">
@@ -499,122 +499,26 @@ function TransaccionesContent() {
         </Card>
       )}
 
-      {/* ML Model Panel */}
-      <Card className="mb-6">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Brain className="w-4 h-4" />
-              Modelos de Inteligencia Artificial
-            </CardTitle>
-            <Button variant="outline" size="sm" onClick={handleTrainModel} disabled={isTraining}>
-              {isTraining ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <RefreshCw className="w-3 h-3 mr-1" />}
-              {isTraining ? "Entrenando…" : "Re-entrenar"}
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Random Forest metrics */}
-            <div className="rounded-xl border border-border p-4">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">IA — Categorización automática</p>
-              {mlMetrics && mlMetrics.accuracy != null ? (
-                <div className="space-y-2">
-                  <div className="flex justify-between">
-                    <span className="text-sm text-muted-foreground">Exactitud (CV)</span>
-                    <span className="font-bold text-foreground">{Math.round(mlMetrics.accuracy * 100)}%</span>
-                  </div>
-                  {mlMetrics.f1_weighted != null && (
-                    <div className="flex justify-between">
-                      <span className="text-sm text-muted-foreground">F1 ponderado</span>
-                      <span className="font-bold text-foreground">{Math.round(mlMetrics.f1_weighted * 100)}%</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between">
-                    <span className="text-sm text-muted-foreground">Muestras de entrenamiento</span>
-                    <span className="font-medium text-foreground">{mlMetrics.n_samples}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm text-muted-foreground">Categorías aprendidas</span>
-                    <span className="font-medium text-foreground">{mlMetrics.n_categories}</span>
-                  </div>
-                  {mlMetrics.top_features?.length > 0 && (
-                    <div className="mt-3 pt-3 border-t border-border">
-                      <p className="text-xs text-muted-foreground mb-2">Palabras más influyentes:</p>
-                      <div className="flex flex-wrap gap-1">
-                        {mlMetrics.top_features.slice(0, 6).map(f => (
-                          <span key={f.word} className="text-xs px-2 py-0.5 rounded-full bg-secondary text-foreground">
-                            {f.word}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="text-center py-4">
-                  <p className="text-sm text-muted-foreground">Sin modelo entrenado</p>
-                  <p className="text-xs text-muted-foreground mt-1">Mínimo 10 transacciones en 2+ categorías</p>
-                </div>
-              )}
-            </div>
-            {/* Isolation Forest metrics */}
-            <div className="rounded-xl border border-border p-4">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Isolation Forest — Anomalías</p>
-              {Object.keys(anomalies).length > 0 ? (
-                <div className="space-y-2">
-                  <div className="flex justify-between">
-                    <span className="text-sm text-muted-foreground">Transacciones analizadas</span>
-                    <span className="font-bold text-foreground">{Object.keys(anomalies).length}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm text-muted-foreground">Gastos inusuales detectados</span>
-                    <span className="font-bold text-destructive">
-                      {Object.values(anomalies).filter(a => a.is_anomaly).length}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm text-muted-foreground">Tasa de anomalías</span>
-                    <span className="font-medium text-foreground">
-                      {Object.keys(anomalies).length > 0
-                        ? Math.round(Object.values(anomalies).filter(a => a.is_anomaly).length / Object.keys(anomalies).length * 100)
-                        : 0}%
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-3 pt-3 border-t border-border">
-                    Detecta gastos atípicos según magnitud, desviación por categoría y patrones temporales.
-                  </p>
-                </div>
-              ) : (
-                <div className="text-center py-4">
-                  <p className="text-sm text-muted-foreground">Sin modelo entrenado</p>
-                  <p className="text-xs text-muted-foreground mt-1">Mínimo 10 transacciones de gasto</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
       <Card className="mb-6">
-        <CardContent className="pt-6">
-          <div className="flex flex-col md:flex-row gap-4">
-            <div className="relative flex-1">
+        <CardContent className="pt-6 space-y-4">
+          <div className="flex gap-3">
+            <div className="relative flex-1 min-w-0">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input placeholder="Buscar transacciones..." value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)} className="pl-10" />
             </div>
-            <div className="flex gap-2 flex-wrap">
-              {allCategories.map(cat => (
-                <Button key={cat} variant={selectedCategory === cat ? "default" : "outline"}
-                  size="sm" onClick={() => setSelectedCategory(cat)}>
-                  {cat}
-                </Button>
-              ))}
-            </div>
-            <Button variant="outline" size="icon">
+            <Button variant="outline" size="icon" className="flex-shrink-0">
               <Download className="w-4 h-4" />
             </Button>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {allCategories.map(cat => (
+              <Button key={cat} variant={selectedCategory === cat ? "default" : "outline"}
+                size="sm" onClick={() => setSelectedCategory(cat)}>
+                {cat}
+              </Button>
+            ))}
           </div>
         </CardContent>
       </Card>
@@ -647,28 +551,28 @@ function TransaccionesContent() {
           ) : (
             <div className="space-y-3">
               {filtered.map((t) => {
-                const Icon = categoryIcons[t.category] ?? ShoppingCart
+                const Icon = getCategoryIcon(t.category)
                 return (
                   <div key={t.id}
-                    className="flex items-center justify-between p-4 rounded-lg bg-secondary/50 hover:bg-secondary transition-colors">
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 rounded-full bg-background flex items-center justify-center">
+                    className="flex items-center justify-between gap-3 p-4 rounded-lg bg-secondary/50 hover:bg-secondary transition-colors">
+                    <div className="flex items-center gap-4 min-w-0">
+                      <div className="w-10 h-10 rounded-full bg-background flex items-center justify-center flex-shrink-0">
                         <Icon className="w-5 h-5 text-foreground" />
                       </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium text-foreground">{t.description}</p>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <p className="font-medium text-foreground truncate min-w-0">{t.description}</p>
                           {anomalies[t.id]?.is_anomaly && (
-                            <span className="text-xs px-1.5 py-0.5 rounded bg-destructive/15 text-destructive font-medium flex items-center gap-1" title={`Score: ${anomalies[t.id].anomaly_score}`}>
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-destructive/15 text-destructive font-medium flex items-center gap-1 flex-shrink-0" title={`Score: ${anomalies[t.id].anomaly_score}`}>
                               <AlertTriangle className="w-3 h-3" />
                               Inusual
                             </span>
                           )}
                         </div>
-                        <p className="text-sm text-muted-foreground">{t.category} • {t.date}</p>
+                        <p className="text-sm text-muted-foreground truncate">{t.category} • {t.date}</p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 flex-shrink-0">
                       <span className={`font-semibold ${t.type === "ingreso" ? "text-foreground" : "text-muted-foreground"}`}>
                         {t.type === "ingreso" ? "+" : "-"}{formatCOP(t.amount)}
                       </span>

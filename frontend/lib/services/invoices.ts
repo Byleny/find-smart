@@ -2,7 +2,7 @@ import api from "@/lib/api"
 import type {
   ProviderInfo, InvoiceLookupRequest, InvoiceLookupResult,
   RecurringService, InvoiceResult, PSEInitResponse, PSEPayRequest, PSEPayResponse,
-  EmcaliCaptchaResponse,
+  EmcaliCaptchaResponse, MovistarPollStart, MovistarInitStatus, MovistarPayStatus,
 } from "@/lib/types"
 
 export const invoiceService = {
@@ -81,6 +81,32 @@ export const invoiceService = {
 
   async psePay(contractId: number, data: PSEPayRequest): Promise<PSEPayResponse> {
     const r = await api.post<PSEPayResponse>(`/invoices/contracts/${contractId}/pse-pay`, data)
+    return r.data
+  },
+
+  // El flujo real puede tardar más de un minuto (con reintentos si el
+  // portal rechaza la consulta), así que arranca en segundo plano y el
+  // resultado se obtiene sondeando *-status — una sola conexión larga se
+  // estaba cortando de forma intermitente sobre redes lentas/túneles.
+  async movistarPseInit(contractId: number): Promise<MovistarPollStart> {
+    const r = await api.post<MovistarPollStart>(`/invoices/contracts/${contractId}/movistar-pse-init`)
+    return r.data
+  },
+
+  async movistarPseInitStatus(contractId: number, pollId: string): Promise<MovistarInitStatus> {
+    const r = await api.post<MovistarInitStatus>(
+      `/invoices/contracts/${contractId}/movistar-pse-init-status`, { poll_id: pollId })
+    return r.data
+  },
+
+  async movistarPsePay(contractId: number, data: PSEPayRequest): Promise<MovistarPollStart> {
+    const r = await api.post<MovistarPollStart>(`/invoices/contracts/${contractId}/movistar-pse-pay`, data)
+    return r.data
+  },
+
+  async movistarPsePayStatus(contractId: number, pollId: string): Promise<MovistarPayStatus> {
+    const r = await api.post<MovistarPayStatus>(
+      `/invoices/contracts/${contractId}/movistar-pse-pay-status`, { poll_id: pollId })
     return r.data
   },
 

@@ -41,4 +41,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 
 EXPOSE 8000
-CMD ["sh", "-c", "python seed_completo.py; uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+ENV DISPLAY=:99
+CMD ["sh", "start.sh"]

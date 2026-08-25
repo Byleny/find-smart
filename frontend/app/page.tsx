@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { Wallet, ArrowRight, CheckCircle2, AlertTriangle } from "lucide-react"
+import { Wallet, ArrowRight, ChevronDown, CheckCircle2, AlertTriangle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { formatCOP } from "@/lib/format"
 
@@ -256,6 +256,23 @@ function FeatureRow({ num, title, body, delay }: { num: string; title: string; b
 export default function LandingPage() {
   const mainRef = useScrollReveal()
 
+  const handleVerQueHaceClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    const target = document.getElementById("caracteristicas")
+    if (!target) return
+    e.preventDefault()
+    const startY = window.scrollY
+    const distance = target.getBoundingClientRect().top
+    const duration = 900
+    const startTime = performance.now()
+    const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
+    const step = (now: number) => {
+      const progress = Math.min((now - startTime) / duration, 1)
+      window.scrollTo(0, startY + distance * easeInOutCubic(progress))
+      if (progress < 1) requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  }
+
   return (
     <div className="min-h-screen" ref={mainRef}>
 
@@ -288,12 +305,12 @@ export default function LandingPage() {
           </nav>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm"
-              className="font-medium hover:bg-white/10"
+              className="hidden sm:inline-flex font-medium hover:bg-white/10"
               style={{ color: "rgba(255,255,255,0.45)" }} asChild>
               <Link href="/login">Iniciar sesión</Link>
             </Button>
             <Button size="sm" asChild className="bg-white text-black font-bold hover:bg-white/88">
-              <Link href="/login">Comenzar gratis</Link>
+              <Link href="/login?mode=register">Comenzar gratis</Link>
             </Button>
           </div>
         </div>
@@ -323,15 +340,18 @@ export default function LandingPage() {
               <div className="mt-8 flex flex-col sm:flex-row gap-3"
                 style={{ animation: "fadeInUp 0.6s ease both", animationDelay: "600ms" }}>
                 <Button size="lg" asChild className="bg-white text-black font-bold hover:bg-white/88">
-                  <Link href="/login">Crear cuenta <ArrowRight className="ml-2 w-4 h-4" /></Link>
+                  <Link href="/login?mode=register">Crear cuenta <ArrowRight className="ml-2 w-4 h-4" /></Link>
                 </Button>
-                <Button size="lg" variant="outline" asChild className="font-medium transition-all"
+                <Button size="lg" variant="outline" asChild className="font-medium transition-all group"
                   style={{ borderColor: "rgba(255,255,255,0.14)", color: "rgba(255,255,255,0.48)", backgroundColor: "transparent" }}>
-                  <a href="#caracteristicas">Ver qué hace</a>
+                  <a href="#caracteristicas" onClick={handleVerQueHaceClick} className="inline-flex items-center">
+                    Ver qué hace
+                    <ChevronDown className="ml-2 w-4 h-4 transition-transform duration-300 group-hover:translate-y-0.5" style={{ animation: "softBounce 2.2s ease-in-out infinite" }} />
+                  </a>
                 </Button>
               </div>
 
-              <div className="mt-10 flex items-center"
+              <div className="mt-10 flex items-center flex-wrap gap-y-3"
                 style={{ animation: "fadeInUp 0.6s ease both", animationDelay: "700ms" }}>
                 {[
                   { val: "3",     label: "modelos de IA" },
@@ -339,7 +359,7 @@ export default function LandingPage() {
                   { val: "$0",    label: "siempre gratis" },
                 ].map((s, i) => (
                   <div key={s.label} className="flex items-center">
-                    {i > 0 && <div className="w-px h-9 mx-7" style={{ backgroundColor: "rgba(255,255,255,0.1)" }} />}
+                    {i > 0 && <div className="w-px h-9 mx-4 sm:mx-7" style={{ backgroundColor: "rgba(255,255,255,0.1)" }} />}
                     <div>
                       <p className="text-2xl font-black text-white font-mono">{s.val}</p>
                       <p className="text-xs mt-0.5 font-mono" style={{ color: "rgba(255,255,255,0.26)" }}>{s.label}</p>
@@ -393,7 +413,7 @@ export default function LandingPage() {
               </p>
               <div className="mt-8 reveal" data-delay="200">
                 <Button asChild className="bg-black text-white font-bold hover:bg-black/88">
-                  <Link href="/login">Crear cuenta <ArrowRight className="ml-2 w-4 h-4" /></Link>
+                  <Link href="/login?mode=register">Crear cuenta <ArrowRight className="ml-2 w-4 h-4" /></Link>
                 </Button>
               </div>
             </div>
@@ -467,7 +487,7 @@ export default function LandingPage() {
             Gratis, sin instalación, funciona en cualquier dispositivo.
           </p>
           <Button size="lg" asChild className="mt-8 bg-white text-black font-bold hover:bg-white/88">
-            <Link href="/login">Crear cuenta <ArrowRight className="ml-2 w-4 h-4" /></Link>
+            <Link href="/login?mode=register">Crear cuenta <ArrowRight className="ml-2 w-4 h-4" /></Link>
           </Button>
           <p className="text-xs mt-4 font-mono" style={{ color: "rgba(255,255,255,0.2)" }}>
             Sin tarjeta · Sin suscripción · Sin límites

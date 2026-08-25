@@ -54,6 +54,11 @@ def _metrics_path(user_id: int) -> Path:
     return MODEL_DIR / f"user_{user_id}_metrics.json"
 
 
+def delete_user_models(user_id: int) -> None:
+    for path in (_cat_path(user_id), _anom_path(user_id), _metrics_path(user_id)):
+        path.unlink(missing_ok=True)
+
+
 def _text(description: str) -> str:
     return description.lower().strip()
 

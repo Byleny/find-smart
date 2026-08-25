@@ -13,11 +13,11 @@ import {
   FileText,
   Settings,
   LogOut,
-  Bell,
   Search,
   Menu,
   X
 } from "lucide-react"
+import { NotificationBell } from "@/components/finsmart/notification-bell"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useState } from "react"
@@ -142,10 +142,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <Button variant="ghost" size="icon" className="relative">
-                <Bell className="w-5 h-5" />
-                <span className="absolute top-1 right-1 w-2 h-2 bg-destructive rounded-full" />
-              </Button>
+              <NotificationBell />
               <div className="w-9 h-9 bg-secondary rounded-full flex items-center justify-center lg:hidden">
                 <span className="text-sm font-medium text-foreground">{initials}</span>
               </div>

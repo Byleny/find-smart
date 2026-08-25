@@ -1,23 +1,28 @@
+import json
 from datetime import datetime
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import text as _sql
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from sqlalchemy import text as _sql, func
 from sqlalchemy.orm import Session
 
 from database import get_db
 from datetime import date as _date
-from models import User, SharedGroup, SharedGroupMember, SharedExpense, SharedExpenseSplit, Transaction, GroupFundContribution
+from models import User, SharedGroup, SharedGroupMember, SharedExpense, SharedExpenseSplit, Transaction, GroupFundContribution, Notification
+from services.email_service import send_group_invite_email, send_settle_request_email, cop as _cop
 from schemas import (
     SharedGroupCreate,
     SharedGroupResponse,
     SharedGroupMemberCreate,
+    SharedGroupMemberUpdate,
     SharedGroupMemberResponse,
+    MemberAddResult,
     SharedExpenseCreate,
     SharedExpenseResponse,
     Balance,
     DebtItem,
     SettleSelectedSplitsPayload,
+    SettleResult,
     FundContributionCreate,
     FundContributionResponse,
     FundStatus,
@@ -123,10 +128,11 @@ async def get_group(
     return group
 
 
-@router.post("/groups/{group_id}/members", response_model=SharedGroupMemberResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/groups/{group_id}/members", response_model=MemberAddResult, status_code=status.HTTP_201_CREATED)
 async def add_member(
     group_id: int,
     payload: SharedGroupMemberCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(_get_current_user),
 ):
@@ -136,20 +142,118 @@ async def add_member(
     if not _is_creator(group, current_user.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo el creador puede agregar miembros")
 
-    linked_user = None
-    if payload.email:
-        linked_user = db.query(User).filter(User.email == payload.email.lower()).first()
+    existing = db.query(SharedGroupMember).filter(
+        SharedGroupMember.group_id == group_id,
+        SharedGroupMember.is_active == True,
+        func.lower(SharedGroupMember.email) == payload.email.lower(),
+    ).first()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ya existe un miembro activo con ese correo en este grupo")
+
+    linked_user = db.query(User).filter(func.lower(User.email) == payload.email.lower()).first()
+
+    # Si el correo pertenece a otra cuenta de FinSmart, se le envía una
+    # invitación en vez de agregarla directo — solo queda vinculada al grupo
+    # si la acepta desde sus notificaciones.
+    if linked_user and linked_user.id != current_user.id:
+        existing_invite = db.query(Notification).filter(
+            Notification.user_id == linked_user.id,
+            Notification.group_id == group_id,
+            Notification.type == "group_invite",
+            Notification.status == "pending",
+        ).first()
+        if existing_invite:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ya hay una invitación pendiente para ese correo en este grupo")
+
+        notif = Notification(
+            user_id=linked_user.id,
+            type="group_invite",
+            title=f"{current_user.full_name} te invitó a \"{group.name}\"",
+            body="Acepta para unirte al grupo y aparecer en sus gastos compartidos.",
+            group_id=group_id,
+            payload=json.dumps({
+                "member_name": payload.name,
+                "member_email": payload.email,
+                "group_name": group.name,
+                "inviter_name": current_user.full_name,
+            }),
+        )
+        db.add(notif)
+        db.commit()
+        background_tasks.add_task(
+            send_group_invite_email, linked_user.email, payload.name, group.name, current_user.full_name,
+        )
+        return MemberAddResult(
+            status="invited",
+            detail=f"Invitación enviada a {payload.email}. Se unirá al grupo cuando la acepte.",
+            member=None,
+        )
 
     member = SharedGroupMember(
         group_id=group_id,
         name=payload.name,
         email=payload.email,
-        user_id=linked_user.id if linked_user else None,
+        user_id=None,
     )
     db.add(member)
     db.commit()
     db.refresh(member)
+    return MemberAddResult(status="added", detail=f"{payload.name} agregado al grupo", member=member)
+
+
+@router.put("/groups/{group_id}/members/{member_id}", response_model=SharedGroupMemberResponse)
+async def update_member(
+    group_id: int,
+    member_id: int,
+    payload: SharedGroupMemberUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    group = db.query(SharedGroup).filter(SharedGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    if not _is_creator(group, current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo el creador puede editar miembros")
+
+    member = db.query(SharedGroupMember).filter(
+        SharedGroupMember.id == member_id, SharedGroupMember.group_id == group_id
+    ).first()
+    if not member:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Miembro no encontrado")
+
+    member.name = payload.name
+    db.commit()
+    db.refresh(member)
     return member
+
+
+@router.delete("/groups/{group_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_member(
+    group_id: int,
+    member_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    group = db.query(SharedGroup).filter(SharedGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    if not _is_creator(group, current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo el creador puede eliminar miembros")
+
+    member = db.query(SharedGroupMember).filter(
+        SharedGroupMember.id == member_id, SharedGroupMember.group_id == group_id
+    ).first()
+    if not member:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Miembro no encontrado")
+    if member.user_id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No puedes eliminarte a ti mismo. Usa 'Salir del grupo'.")
+
+    if member.is_active:
+        _deactivate_member(member)
+        db.flush()
+        _cleanup_group_if_empty(group_id, db)
+        db.commit()
+    return None
 
 
 @router.post("/groups/{group_id}/expenses", response_model=SharedExpenseResponse, status_code=status.HTTP_201_CREATED)
@@ -165,13 +269,28 @@ async def add_expense(
     if not _can_access_group(group, current_user.id, db):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
+    is_fondo = getattr(group, "group_type", "gastos") == "fondo"
+
+    if is_fondo:
+        total_contributed = db.query(func.coalesce(func.sum(GroupFundContribution.amount), 0.0)).filter(
+            GroupFundContribution.group_id == group_id
+        ).scalar()
+        total_spent = db.query(func.coalesce(func.sum(SharedExpense.amount), 0.0)).filter(
+            SharedExpense.group_id == group_id
+        ).scalar()
+        available = round(total_contributed - total_spent, 2)
+        if payload.amount > available:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Saldo insuficiente en el fondo. Disponible: ${available:,.0f}, monto solicitado: ${payload.amount:,.0f}",
+            )
+
     expense_data = payload.model_dump(exclude={"splits"})
     expense = SharedExpense(**expense_data, group_id=group_id)
     db.add(expense)
     db.flush()
 
     now = datetime.utcnow()
-    is_fondo = getattr(group, "group_type", "gastos") == "fondo"
 
     if is_fondo:
         # Fondo groups: no splits, expense is paid from the communal pool.
@@ -189,7 +308,10 @@ async def add_expense(
             )
             db.add(split)
     else:
-        members = db.query(SharedGroupMember).filter(SharedGroupMember.group_id == group_id).all()
+        members = db.query(SharedGroupMember).filter(
+            SharedGroupMember.group_id == group_id,
+            SharedGroupMember.is_active == True,
+        ).all()
         if members:
             per_person = round(payload.amount / len(members), 2)
             for member in members:
@@ -317,26 +439,92 @@ async def settle_split(
 
     split.is_settled = True
     split.settled_at = datetime.utcnow()
+    split.settled_by_user_id = current_user.id
     db.commit()
     return {"detail": "Split marked as settled"}
 
 
-@router.put("/groups/{group_id}/settle-between", response_model=dict)
+def _settle_splits_now(splits: List[SharedExpenseSplit], db: Session, now: datetime) -> None:
+    for s in splits:
+        s.is_settled = True
+        s.settled_at = now
+
+
+def _request_or_settle(
+    splits: List[SharedExpenseSplit],
+    creditor_member: SharedGroupMember,
+    debtor_user_id: int,
+    debtor_name: str,
+    obligations_str: str,
+    db: Session,
+    background_tasks: BackgroundTasks,
+) -> SettleResult:
+    """Si el acreedor tiene cuenta vinculada, crea una notificación para que él
+    confirme el pago antes de saldar de verdad. Si no tiene cuenta (miembro
+    sin registrar), no hay a quién pedirle confirmación — se salda de una vez,
+    igual que antes."""
+    now = datetime.utcnow()
+    total = round(sum(s.amount for s in splits), 2)
+    creditor_name = creditor_member.name if creditor_member else "compañero"
+
+    if creditor_member and creditor_member.user_id and creditor_member.user_id != debtor_user_id:
+        notif = Notification(
+            user_id=creditor_member.user_id,
+            type="settle_request",
+            title=f"{debtor_name} dice que te pagó ${total:,.0f}",
+            body=obligations_str,
+            group_id=creditor_member.group_id,
+            payload=json.dumps({
+                "split_ids": [s.id for s in splits],
+                "amount": total,
+                "debtor_user_id": debtor_user_id,
+                "debtor_name": debtor_name,
+                "creditor_name": creditor_name,
+                "obligations_str": obligations_str,
+            }),
+        )
+        db.add(notif)
+        db.commit()
+        creditor_user = db.query(User).filter(User.id == creditor_member.user_id).first()
+        if creditor_user:
+            group = db.query(SharedGroup).filter(SharedGroup.id == creditor_member.group_id).first()
+            background_tasks.add_task(
+                send_settle_request_email,
+                creditor_user.email, debtor_name, _cop(total),
+                group.name if group else "", obligations_str,
+            )
+        return SettleResult(status="requested", detail=f"Se le pidió a {creditor_name} confirmar el pago", amount=total)
+
+    _settle_splits_now(splits, db, now)
+    db.add(Transaction(
+        user_id=debtor_user_id,
+        description=f"Pagué a {creditor_name}: {obligations_str}",
+        amount=total,
+        category="Gastos compartidos",
+        type="gasto",
+        date=now.date(),
+    ))
+    db.commit()
+    return SettleResult(status="settled", detail=f"Saldado con {creditor_name}", amount=total)
+
+
+@router.put("/groups/{group_id}/settle-between", response_model=SettleResult)
 async def settle_between(
     group_id: int,
     debtor_id: int,
     creditor_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(_get_current_user),
 ):
-    """Mark all unsettled splits of debtor_id that belong to expenses paid by creditor_id."""
+    """El deudor marca como pagadas sus deudas con un acreedor. Si el
+    acreedor tiene cuenta, queda pendiente de que él lo confirme."""
     group = db.query(SharedGroup).filter(SharedGroup.id == group_id).first()
     if not group:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
     if not _can_access_group(group, current_user.id, db):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
-    now = datetime.utcnow()
     splits = (
         db.query(SharedExpenseSplit)
         .join(SharedExpense, SharedExpenseSplit.expense_id == SharedExpense.id)
@@ -348,9 +536,9 @@ async def settle_between(
         )
         .all()
     )
-    total = round(sum(s.amount for s in splits), 2)
+    if not splits:
+        return SettleResult(status="settled", detail="No hay deudas pendientes", amount=0)
 
-    # Collect expense names before marking settled
     expense_ids = list({s.expense_id for s in splits})
     expenses_settled = db.query(SharedExpense).filter(SharedExpense.id.in_(expense_ids)).all()
     expense_labels = [f"{e.description} (${e.amount:,.0f})" for e in expenses_settled[:3]]
@@ -358,50 +546,22 @@ async def settle_between(
         expense_labels.append(f"y {len(expenses_settled) - 3} más")
     obligations_str = ", ".join(expense_labels)
 
-    for s in splits:
-        s.is_settled = True
-        s.settled_at = now
-
     creditor_member = db.query(SharedGroupMember).filter(SharedGroupMember.id == creditor_id).first()
-    debtor_member = db.query(SharedGroupMember).filter(SharedGroupMember.id == debtor_id).first()
+    debtor_name = current_user.full_name or "compañero"
 
-    if total > 0:
-        creditor_name = creditor_member.name if creditor_member else "compañero"
-        debtor_name = debtor_member.name if debtor_member else "compañero"
-
-        # Gasto para quien paga (siempre el usuario activo)
-        db.add(Transaction(
-            user_id=current_user.id,
-            description=f"Pagué a {creditor_name}: {obligations_str}",
-            amount=total,
-            category="Gastos compartidos",
-            type="gasto",
-            date=now.date(),
-        ))
-
-        # Ingreso para el acreedor si tiene cuenta vinculada
-        if creditor_member and creditor_member.user_id and creditor_member.user_id != current_user.id:
-            db.add(Transaction(
-                user_id=creditor_member.user_id,
-                description=f"{debtor_name} me pagó: {obligations_str}",
-                amount=total,
-                category="Gastos compartidos",
-                type="ingreso",
-                date=now.date(),
-            ))
-
-    db.commit()
-    return {"detail": f"Settled {len(splits)} split(s)", "amount": total}
+    return _request_or_settle(splits, creditor_member, current_user.id, debtor_name, obligations_str, db, background_tasks)
 
 
-@router.post("/groups/{group_id}/settle-splits", response_model=dict)
+@router.post("/groups/{group_id}/settle-splits", response_model=SettleResult)
 async def settle_selected_splits(
     group_id: int,
     payload: SettleSelectedSplitsPayload,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(_get_current_user),
 ):
-    """Settle a user-selected subset of splits and record a transaction for the total."""
+    """El deudor marca como pagado un subconjunto de splits elegido a mano.
+    Si el acreedor tiene cuenta, queda pendiente de que él lo confirme."""
     group = db.query(SharedGroup).filter(SharedGroup.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -413,10 +573,7 @@ async def settle_selected_splits(
         SharedExpenseSplit.is_settled == False,
     ).all()
     if not splits:
-        return {"detail": "No unsettled splits found", "amount": 0}
-
-    now = datetime.utcnow()
-    total = round(sum(s.amount for s in splits), 2)
+        return SettleResult(status="settled", detail="No hay splits pendientes", amount=0)
 
     expense_ids = list({s.expense_id for s in splits})
     expenses_settled = db.query(SharedExpense).filter(SharedExpense.id.in_(expense_ids)).all()
@@ -425,37 +582,12 @@ async def settle_selected_splits(
         expense_labels.append(f"y {len(expenses_settled) - 3} más")
     obligations_str = ", ".join(expense_labels)
 
-    for s in splits:
-        s.is_settled = True
-        s.settled_at = now
-
     creditor_member = db.query(SharedGroupMember).filter(
         SharedGroupMember.id == payload.creditor_member_id
     ).first()
-    creditor_name = creditor_member.name if creditor_member else "compañero"
+    debtor_name = current_user.full_name or "compañero"
 
-    db.add(Transaction(
-        user_id=current_user.id,
-        description=f"Pagué a {creditor_name}: {obligations_str}",
-        amount=total,
-        category="Gastos compartidos",
-        type="gasto",
-        date=now.date(),
-    ))
-
-    if creditor_member and creditor_member.user_id and creditor_member.user_id != current_user.id:
-        debtor_name = current_user.full_name or "compañero"
-        db.add(Transaction(
-            user_id=creditor_member.user_id,
-            description=f"{debtor_name} me pagó: {obligations_str}",
-            amount=total,
-            category="Gastos compartidos",
-            type="ingreso",
-            date=now.date(),
-        ))
-
-    db.commit()
-    return {"detail": f"Settled {len(splits)} split(s)", "amount": total}
+    return _request_or_settle(splits, creditor_member, current_user.id, debtor_name, obligations_str, db, background_tasks)
 
 
 @router.post("/groups/{group_id}/fund/contribute", response_model=FundContributionResponse, status_code=status.HTTP_201_CREATED)
@@ -550,6 +682,16 @@ async def get_fund_status(
     )
 
 
+def _deactivate_member(member: SharedGroupMember) -> None:
+    """Deactivate and unlink a member. Clears email too, so a stale row can
+    never be silently re-linked (via the email-matching backfill or a future
+    add_member call) to a different account that later registers with that
+    same address."""
+    member.is_active = False
+    member.user_id = None
+    member.email = None
+
+
 def _cleanup_group_if_empty(group_id: int, db: Session) -> bool:
     """Delete group if no active members remain. Returns True if deleted."""
     active_count = db.query(SharedGroupMember).filter(
@@ -583,9 +725,7 @@ async def leave_group(
         member = next((m for m in all_members if m.email and m.email.lower() == current_user.email.lower()), None)
 
     if member and member.is_active:
-        # Mark as inactive and unlink
-        member.is_active = False
-        member.user_id = None
+        _deactivate_member(member)
 
         # Transfer creator role if needed
         active_others = [m for m in all_members if m.id != member.id and m.is_active and m.user_id is not None]
@@ -600,3 +740,29 @@ async def leave_group(
 
     _cleanup_group_if_empty(group_id, db)
     db.commit()
+
+
+def leave_all_groups_for_user(user: User, db: Session) -> None:
+    """Detach a user from every shared group they belong to — same effect as
+    calling leave_group() on each one. Used when an account is deleted, so no
+    shared-group membership (and no trace of its email) survives the account
+    that owned it."""
+    member_rows = db.query(SharedGroupMember).filter(
+        SharedGroupMember.user_id == user.id,
+        SharedGroupMember.is_active == True,
+    ).all()
+    for member in member_rows:
+        group = db.query(SharedGroup).filter(SharedGroup.id == member.group_id).first()
+        if not group:
+            continue
+        _deactivate_member(member)
+        active_others = db.query(SharedGroupMember).filter(
+            SharedGroupMember.group_id == group.id,
+            SharedGroupMember.id != member.id,
+            SharedGroupMember.is_active == True,
+            SharedGroupMember.user_id.isnot(None),
+        ).all()
+        if group.creator_id == user.id and active_others:
+            group.creator_id = active_others[0].user_id
+        db.flush()
+        _cleanup_group_if_empty(group.id, db)

@@ -1,12 +1,14 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { User, Phone, CreditCard, Save, CheckCircle, AlertCircle, Loader2 } from "lucide-react"
+import { User, Phone, CreditCard, Save, CheckCircle, AlertCircle, Loader2, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { authService } from "@/lib/services/auth"
 import { useAuth } from "@/contexts/auth-context"
+import { getErrorMessage } from "@/lib/utils"
 
 const ID_TYPES = [
   { value: "CC",  label: "Cédula de Ciudadanía (CC)" },
@@ -16,7 +18,7 @@ const ID_TYPES = [
 ]
 
 export default function ConfiguracionPage() {
-  const { user: authUser, refreshUser } = useAuth()
+  const { user: authUser, refreshUser, logout } = useAuth()
 
   const [form, setForm] = useState({
     full_name: "",
@@ -27,6 +29,11 @@ export default function ConfiguracionPage() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const [deleteDialog, setDeleteDialog] = useState(false)
+  const [deletePassword, setDeletePassword] = useState("")
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   useEffect(() => {
     if (authUser) {
@@ -57,6 +64,19 @@ export default function ConfiguracionPage() {
       setError("No se pudo guardar el perfil. Intenta de nuevo.")
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleDeleteAccount() {
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await authService.deleteAccount(deletePassword)
+      logout()
+    } catch (err: unknown) {
+      setDeleteError(getErrorMessage(err, "No se pudo eliminar la cuenta. Intenta de nuevo."))
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -178,6 +198,58 @@ export default function ConfiguracionPage() {
           <><Save className="w-4 h-4 mr-2" />Guardar cambios</>
         )}
       </Button>
+
+      {/* Zona de peligro */}
+      <Card className="border-red-200">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base text-red-600">
+            <Trash2 className="w-4 h-4" />
+            Eliminar cuenta
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-gray-500">
+            Esta acción es permanente. Se eliminarán tus transacciones, presupuestos, metas, contratos, modelos de IA entrenados y tu participación en grupos compartidos. No se puede deshacer, y si vuelves a registrarte con el mismo correo empezarás desde cero.
+          </p>
+          <Dialog open={deleteDialog} onOpenChange={(o) => { setDeleteDialog(o); if (!o) { setDeleteError(null); setDeletePassword("") } }}>
+            <DialogTrigger asChild>
+              <Button variant="outline" className="text-red-600 border-red-300 hover:bg-red-50">
+                <Trash2 className="w-4 h-4 mr-2" />
+                Eliminar mi cuenta
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>¿Eliminar tu cuenta permanentemente?</DialogTitle></DialogHeader>
+              <div className="space-y-4 mt-4">
+                <p className="text-sm text-gray-500">
+                  Confirma tu contraseña para eliminar tu cuenta y todos tus datos. Esta acción no se puede deshacer.
+                </p>
+                <div>
+                  <label className="text-sm font-medium text-gray-700 block mb-1">Contraseña</label>
+                  <Input type="password" value={deletePassword}
+                    onChange={e => { setDeletePassword(e.target.value); setDeleteError(null) }}
+                    placeholder="••••••••" />
+                </div>
+                {deleteError && (
+                  <div className="flex items-center gap-2 text-red-600 text-sm">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                    {deleteError}
+                  </div>
+                )}
+                <div className="flex gap-3">
+                  <Button variant="outline" className="flex-1" onClick={() => setDeleteDialog(false)}>
+                    Cancelar
+                  </Button>
+                  <Button variant="destructive" className="flex-1" onClick={handleDeleteAccount} disabled={deleting || !deletePassword}>
+                    {deleting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
+                    {deleting ? "Eliminando…" : "Sí, eliminar todo"}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </CardContent>
+      </Card>
     </div>
   )
 }

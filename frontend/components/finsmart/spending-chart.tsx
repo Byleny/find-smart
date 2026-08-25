@@ -21,7 +21,7 @@ export function SpendingChart() {
   return (
     <Card className="bg-card border-border">
       <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center flex-wrap gap-2 justify-between">
           <CardTitle className="text-base font-medium text-foreground">Flujo de Efectivo</CardTitle>
           <div className="flex items-center gap-4 text-xs">
             <div className="flex items-center gap-2">

@@ -1,35 +1,32 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import {
-  Plus, ShoppingCart, Home, Car, Utensils, Zap, Film, Heart, MoreHorizontal,
-  Edit2, Trash2, AlertCircle, Loader2, Receipt,
+  Plus, Edit2, Trash2, AlertCircle, Loader2, Receipt,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CurrencyInput } from "@/components/finsmart/currency-input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { CategoryCombobox } from "@/components/finsmart/category-combobox"
+import { CategoryIconPicker } from "@/components/finsmart/category-icon-picker"
 import { budgetService } from "@/lib/services/budgets"
 import { transactionService } from "@/lib/services/transactions"
-import type { Budget } from "@/lib/types"
+import type { Budget, Transaction } from "@/lib/types"
 import { formatCOP as cop } from "@/lib/format"
-
-const categoryIcons: Record<string, React.ElementType> = {
-  "Compras": ShoppingCart, "Vivienda": Home, "Transporte": Car,
-  "Alimentación": Utensils, "Servicios": Zap, "Entretenimiento": Film,
-  "Salud": Heart, "Otros": MoreHorizontal,
-}
 
 const categories = ["Alimentación", "Transporte", "Vivienda", "Entretenimiento", "Servicios", "Salud", "Compras", "Otros"]
 
 export default function PresupuestosPage() {
   const [budgets, setBudgets] = useState<Budget[]>([])
+  const [transactions, setTransactions] = useState<Transaction[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
   // Dialog crear/editar presupuesto
   const [budgetDialogOpen, setBudgetDialogOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
-  const [budgetForm, setBudgetForm] = useState({ category: "Alimentación", limit_amount: "" })
+  const [budgetForm, setBudgetForm] = useState({ category: "", limit_amount: "" })
 
   // Dialog registrar gasto rápido
   const [spendDialog, setSpendDialog] = useState<{ budget: Budget } | null>(null)
@@ -39,13 +36,28 @@ export default function PresupuestosPage() {
   const load = useCallback(async () => {
     setIsLoading(true)
     try {
-      setBudgets(await budgetService.list())
+      const [budgetData, txData] = await Promise.all([
+        budgetService.list(),
+        transactionService.list().catch(() => []),
+      ])
+      setBudgets(budgetData)
+      setTransactions(txData)
     } finally {
       setIsLoading(false)
     }
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Categorías: preset + lo que ya se use en presupuestos o en transacciones,
+  // para que una categoría creada al registrar un gasto (ej. "Transporte
+  // privado") también se sugiera aquí, y viceversa.
+  const categorySuggestions = useMemo(() => {
+    const s = new Set<string>(categories)
+    budgets.forEach(b => { if (b.category) s.add(b.category) })
+    transactions.forEach(t => { if (t.type === "gasto" && t.category) s.add(t.category) })
+    return Array.from(s).sort()
+  }, [budgets, transactions])
 
   // ── Crear / Editar presupuesto ─────────────────────────────────────────────
 
@@ -61,7 +73,7 @@ export default function PresupuestosPage() {
       }
       setBudgetDialogOpen(false)
       setEditingId(null)
-      setBudgetForm({ category: "Alimentación", limit_amount: "" })
+      setBudgetForm({ category: "", limit_amount: "" })
       await load()
     } catch { /* interceptor maneja errores */ }
   }
@@ -80,7 +92,7 @@ export default function PresupuestosPage() {
 
   const openNew = () => {
     setEditingId(null)
-    setBudgetForm({ category: "Alimentación", limit_amount: "" })
+    setBudgetForm({ category: "", limit_amount: "" })
     setBudgetDialogOpen(true)
   }
 
@@ -170,7 +182,6 @@ export default function PresupuestosPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {budgets.map((budget) => {
-            const Icon = categoryIcons[budget.category] ?? ShoppingCart
             const percentage = budget.limit_amount > 0
               ? Math.round((budget.spent_amount / budget.limit_amount) * 100) : 0
             const isOver = percentage >= 90
@@ -181,9 +192,7 @@ export default function PresupuestosPage() {
                 <CardContent className="pt-6">
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center">
-                        <Icon className="w-5 h-5 text-foreground" />
-                      </div>
+                      <CategoryIconPicker category={budget.category} />
                       <div>
                         <h3 className="font-medium text-foreground">{budget.category}</h3>
                         <p className="text-xs text-muted-foreground">Límite mensual</p>
@@ -256,23 +265,27 @@ export default function PresupuestosPage() {
           <form onSubmit={handleBudgetSubmit} className="space-y-4 mt-4">
             <div>
               <label className="text-sm font-medium text-foreground">Categoría</label>
-              <select value={budgetForm.category}
-                onChange={(e) => setBudgetForm({ ...budgetForm, category: e.target.value })}
-                className="mt-2 w-full h-10 px-3 rounded-md border border-input bg-background text-foreground">
-                {categories.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+              <CategoryCombobox
+                value={budgetForm.category}
+                onChange={(v) => setBudgetForm({ ...budgetForm, category: v })}
+                suggestions={categorySuggestions}
+                placeholder="Ej: Transporte público"
+                required
+                className="mt-2"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Elige una sugerencia o escribe una categoría propia — por ejemplo, separar Transporte en
+                &quot;Transporte público&quot; y &quot;Transporte privado&quot; con un límite distinto para cada una.
+              </p>
             </div>
             <div>
               <label className="text-sm font-medium text-foreground">Límite mensual (COP)</label>
               <div className="relative mt-2">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                <Input
-                  type="number"
-                  min="1000"
-                  step="1000"
-                  placeholder="500000"
+                <CurrencyInput
+                  placeholder="500.000"
                   value={budgetForm.limit_amount}
-                  onChange={(e) => setBudgetForm({ ...budgetForm, limit_amount: e.target.value })}
+                  onValueChange={(v) => setBudgetForm({ ...budgetForm, limit_amount: v })}
                   className="pl-7"
                   required
                 />
@@ -310,13 +323,10 @@ export default function PresupuestosPage() {
               <label className="text-sm font-medium text-foreground">Monto (COP)</label>
               <div className="relative mt-2">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                <Input
-                  type="number"
-                  min="100"
-                  step="100"
-                  placeholder="50000"
+                <CurrencyInput
+                  placeholder="50.000"
                   value={spendForm.amount}
-                  onChange={(e) => setSpendForm({ ...spendForm, amount: e.target.value })}
+                  onValueChange={(v) => setSpendForm({ ...spendForm, amount: v })}
                   className="pl-7"
                   required
                 />

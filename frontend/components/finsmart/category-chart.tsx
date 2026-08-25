@@ -37,9 +37,9 @@ export function CategoryChart() {
       </CardHeader>
       <CardContent>
         {isLoading ? (
-          <div className="flex items-center gap-6">
+          <div className="flex flex-col sm:flex-row items-center gap-6">
             <Skeleton className="w-40 h-40 rounded-full flex-shrink-0" />
-            <div className="flex-1 space-y-3">
+            <div className="w-full flex-1 space-y-3">
               {Array.from({ length: 4 }).map((_, i) => (
                 <div key={i} className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -54,7 +54,7 @@ export function CategoryChart() {
         ) : categories.length === 0 ? (
           <p className="text-center text-muted-foreground text-sm py-8">Sin gastos este mes.</p>
         ) : (
-          <div className="flex items-center gap-6">
+          <div className="flex flex-col sm:flex-row items-center gap-6">
             <div className="w-40 h-40 relative flex-shrink-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -86,7 +86,7 @@ export function CategoryChart() {
                 </div>
               </div>
             </div>
-            <div className="flex-1 space-y-2 min-w-0">
+            <div className="w-full flex-1 space-y-2 min-w-0">
               {categories.map((item, i) => (
                 <div key={i} className="flex items-center justify-between">
                   <div className="flex items-center gap-2 min-w-0">

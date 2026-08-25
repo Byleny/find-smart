@@ -30,7 +30,7 @@ export function BalanceCard() {
             </div>
             <Skeleton className="h-7 w-24 rounded-full" />
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 min-[400px]:grid-cols-2 gap-3 sm:gap-4">
             {[0, 1].map(i => (
               <div key={i} className="flex items-center gap-3 p-3 rounded-xl bg-secondary/50">
                 <Skeleton className="w-10 h-10 rounded-full flex-shrink-0" />
@@ -50,11 +50,11 @@ export function BalanceCard() {
     <Card className="bg-card border-border overflow-hidden relative">
       <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-transparent" />
       <CardContent className="p-6 relative">
-        <div className="flex items-start justify-between mb-6">
+        <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
           <div>
             <p className="text-sm text-muted-foreground mb-1">Balance Total</p>
             <div className="flex items-center gap-3">
-              <h2 className="text-4xl font-bold text-foreground">
+              <h2 className="text-3xl sm:text-4xl font-bold text-foreground">
                 {showBalance
                   ? `${formatCOP(summary.balance)}`
                   : "••••••"}
@@ -65,13 +65,13 @@ export function BalanceCard() {
               </Button>
             </div>
           </div>
-          <div className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary/20 text-primary">
-            <TrendingUp className="w-4 h-4" />
-            <span className="text-sm font-medium">Este mes</span>
+          <div className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary/20 text-primary flex-shrink-0">
+            <TrendingUp className="w-4 h-4 flex-shrink-0" />
+            <span className="text-sm font-medium whitespace-nowrap">Este mes</span>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 min-[400px]:grid-cols-2 gap-3 sm:gap-4">
           <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary/50">
             <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">
               <ArrowDownRight className="w-5 h-5 text-primary" />

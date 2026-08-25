@@ -17,7 +17,9 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 && typeof window !== "undefined") {
+    const url: string = error.config?.url ?? ""
+    const isAuthAttempt = url.includes("/auth/login") || url.includes("/auth/register")
+    if (error.response?.status === 401 && !isAuthAttempt && typeof window !== "undefined") {
       localStorage.removeItem("finsmart_token")
       window.location.href = "/login"
     }

@@ -1,6 +1,9 @@
 import asyncio
+import json
+import os
 import random
 import re
+import threading
 import uuid
 import concurrent.futures
 from datetime import date, timedelta, datetime
@@ -482,6 +485,66 @@ MOVISTAR_CIUDADES: dict[str, str] = {
 }
 
 
+def _limpiar_lock_perfil(perfil: str) -> None:
+    """
+    Borra el candado de Chrome (SingletonLock/SingletonSocket/SingletonCookie)
+    antes de lanzar el navegador. Se llama SIEMPRE bajo `_lock_perfil()`, así
+    que si el candado sigue ahí es de una sesión anterior que no cerró limpio
+    (timeout, proceso matado) — nunca de una consulta realmente concurrente,
+    porque esa ya está esperando el lock de Python. Sin esto, Playwright
+    falla con "Opening in existing browser session" y no hay forma de
+    recuperarse sin entrar al contenedor a borrarlo a mano.
+    """
+    for nombre in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        try:
+            os.remove(os.path.join(perfil, nombre))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
+_locks_perfil: dict[str, threading.Lock] = {}
+_locks_perfil_mutex = threading.Lock()
+
+
+def _lock_perfil(perfil: str) -> threading.Lock:
+    """
+    Un candado de Python por directorio de perfil de Chrome. El candado de
+    archivo de Chrome (SingletonLock) solo detecta la concurrencia después
+    del hecho (o falla, o se corrompe el perfil); este candado la evita desde
+    antes, poniendo en cola cualquier segunda consulta al mismo proveedor en
+    vez de dejarlas competir por el mismo perfil.
+    """
+    with _locks_perfil_mutex:
+        if perfil not in _locks_perfil:
+            _locks_perfil[perfil] = threading.Lock()
+        return _locks_perfil[perfil]
+
+
+def _mensaje_legible(mensaje) -> str:
+    """
+    El campo `message` a veces trae un JSON crudo incrustado como texto, ej.
+    'Error REST: {"result":{"details":{"messageLegacy":"El suscriptor no
+    existe."}}}'. Se intenta extraer ese texto legible; si no hay JSON o no
+    trae el campo esperado, se devuelve el mensaje tal cual llegó.
+    """
+    if not mensaje or not isinstance(mensaje, str):
+        return ""
+    inicio = mensaje.find("{")
+    if inicio == -1:
+        return mensaje
+    try:
+        datos = json.loads(mensaje[inicio:])
+    except (ValueError, TypeError):
+        return mensaje
+    detalles = (datos.get("result") or {}).get("details") or {}
+    return (
+        detalles.get("messageLegacy") or detalles.get("message")
+        or (datos.get("result") or {}).get("message") or mensaje
+    )
+
+
 class MovistarScraper(PlaywrightScraper):
     """
     Consulta facturas de Movistar en payment.movistar.co.
@@ -499,13 +562,51 @@ class MovistarScraper(PlaywrightScraper):
     PORTAL_URL  = "https://payment.movistar.co/"
     PAYMENT_URL = "https://payment.movistar.co/"
 
+    # Overridables por subclase (ver MovistarMovilScraper más abajo)
+    TAB_LABEL       = "Internet"   # pestaña del portal: servicio fijo/hogar
+    PROVIDER_ID     = "movistar"
+    REF_PREFIX      = "MOVISTAR"
+    PROFILE_ENV     = "MOVISTAR_PROFILE_DIR"
+    PROFILE_DEFAULT = "/var/lib/finsmart/chrome-movistar"
+
     def fetch_invoice(self, account_reference: str, user_data: dict | None = None) -> ScraperResult:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(
-                asyncio.run, self._fetch(account_reference, user_data or {})
-            ).result(timeout=240)
+        # El perfil de Chrome de este proveedor es compartido entre TODOS los
+        # usuarios (no hay uno por usuario); sin este candado, dos consultas
+        # simultáneas al mismo proveedor competían por el mismo perfil —
+        # Playwright podía fallar a mitad de camino o corromper el perfil en
+        # vez de simplemente esperar su turno.
+        perfil = os.environ.get(self.PROFILE_ENV, self.PROFILE_DEFAULT)
+        with _lock_perfil(perfil):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(
+                    asyncio.run, self._fetch(account_reference, user_data or {})
+                ).result(timeout=240)
+
+    # Mensajes que indican un fallo probablemente transitorio (reCAPTCHA v3
+    # puntuó bajo esa sesión, o el portal no respondió a tiempo) — vale la
+    # pena reintentar con un contexto de navegador nuevo. Un mensaje de negocio
+    # real (ej. "El suscriptor no existe.") ya es una respuesta final: no se
+    # reintenta, porque no va a cambiar y solo gasta cupo con el portal real.
+    _MENSAJES_REINTENTABLES = (
+        "no pudo entregar la factura ahora mismo",
+        "no respondió a la consulta",
+    )
 
     async def _fetch(self, account_reference: str, user_data: dict) -> ScraperResult:
+        intentos = 2
+        resultado: ScraperResult | None = None
+        for intento in range(1, intentos + 1):
+            resultado = await self._un_intento(account_reference, user_data)
+            reintentable = resultado.portal_blocked and any(
+                m in (resultado.blocked_reason or "") for m in self._MENSAJES_REINTENTABLES
+            )
+            if not reintentable:
+                return resultado
+            print(f"[movistar] intento {intento}/{intentos} bloqueado (probable reCAPTCHA), "
+                  f"{'reintentando' if intento < intentos else 'sin más intentos'}: {resultado.blocked_reason}")
+        return resultado
+
+    async def _un_intento(self, account_reference: str, user_data: dict) -> ScraperResult:
         import os
         from patchright.async_api import async_playwright
 
@@ -516,13 +617,14 @@ class MovistarScraper(PlaywrightScraper):
         def _blocked(reason: str) -> ScraperResult:
             return ScraperResult(
                 amount=0, due_date=date.today() + timedelta(days=15),
-                reference=f"MOVISTAR-{account_reference}", provider="movistar",
+                reference=f"{self.REF_PREFIX}-{account_reference}", provider=self.PROVIDER_ID,
                 payment_url=self.PAYMENT_URL,
                 portal_blocked=True, blocked_reason=reason,
             )
 
-        perfil = os.environ.get("MOVISTAR_PROFILE_DIR", "/var/lib/finsmart/chrome-movistar")
+        perfil = os.environ.get(self.PROFILE_ENV, self.PROFILE_DEFAULT)
         os.makedirs(perfil, exist_ok=True)
+        _limpiar_lock_perfil(perfil)
 
         respuesta: dict | None = None
 
@@ -535,22 +637,59 @@ class MovistarScraper(PlaywrightScraper):
             )
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
+            def on_request(req):
+                if "/api/data-payment" in req.url:
+                    print(f"[movistar] request headers: {dict(req.headers)!r}")
+                    print(f"[movistar] request body: {req.post_data!r}")
+
             async def on_response(r):
                 nonlocal respuesta
                 if "/api/data-payment" in r.url:
+                    print(f"[movistar] {r.request.method} {r.url} -> HTTP {r.status}")
                     try:
                         respuesta = await r.json()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        print(f"[movistar] no se pudo leer el body como JSON: {exc}")
 
+            page.on("request", on_request)
             page.on("response", lambda r: asyncio.create_task(on_response(r)))
 
             try:
                 await page.goto(self.PORTAL_URL, wait_until="domcontentloaded", timeout=60_000)
                 await page.wait_for_timeout(6_000)
 
+                # Recorrido "humano" antes de tocar el formulario: reCAPTCHA v3 puntúa
+                # la sesión completa, y una pestaña recién abierta que solo escribe
+                # sin ningún movimiento previo de mouse/scroll es en sí misma una
+                # señal de bot. No garantiza nada, pero ayuda al puntaje.
+                try:
+                    await page.mouse.move(random.randint(200, 700), random.randint(150, 500), steps=10)
+                    await page.wait_for_timeout(random.randint(400, 900))
+                    await page.mouse.wheel(0, random.randint(100, 250))
+                    await page.wait_for_timeout(random.randint(500, 1_000))
+                    await page.mouse.move(random.randint(300, 900), random.randint(200, 600), steps=8)
+                    await page.wait_for_timeout(random.randint(300, 700))
+                except Exception:
+                    pass
+
+                BOTONES_A_EVITAR = {
+                    "continuar", "pagar", "agregar otra factura",
+                    "activar o actualizar tu pago automático",
+                    "eliminar factura de mi lista",
+                    # Pestañas: nunca deben tocarse buscando otra cosa, o se
+                    # revierte la pestaña ya activada arriba.
+                    "pospago", "internet",
+                }
+
                 async def elegir(texto: str) -> bool:
-                    """Elige la opción en el primer <select> visible que la tenga."""
+                    """
+                    Elige una opción por texto. Prueba primero un <select> nativo;
+                    si no hay ninguno con esa opción, el campo es un combobox
+                    personalizado (así es "Identificador de pago" en el portal real:
+                    no es un <select>), así que se abre cada disparador visible y se
+                    busca una opción con el texto pedido, evitando los botones de
+                    acción conocidos para no enviar el formulario antes de tiempo.
+                    """
                     sels = page.locator("select")
                     for i in range(await sels.count()):
                         el = sels.nth(i)
@@ -567,44 +706,98 @@ class MovistarScraper(PlaywrightScraper):
                                 return True
                         except Exception:
                             continue
+
+                    # Tope y tiempos recortados: el combo correcto casi siempre
+                    # está entre los primeros candidatos, y agotar los 20 con
+                    # espera larga por candidato equivocado sumaba hasta ~40s
+                    # extra por consulta cuando no coincidía rápido.
+                    disparadores = page.locator('[role="combobox"], [aria-haspopup="listbox"], button, [role="button"]')
+                    for i in range(min(await disparadores.count(), 10)):
+                        trigger = disparadores.nth(i)
+                        try:
+                            if not await trigger.is_visible(timeout=300):
+                                continue
+                            texto_boton = (await trigger.text_content() or "").strip().lower()
+                            if texto_boton in BOTONES_A_EVITAR:
+                                continue
+                            await trigger.click(timeout=1_000)
+                            await page.wait_for_timeout(300)
+                        except Exception:
+                            continue
+
+                        try:
+                            candidata = page.get_by_text(texto, exact=False).last
+                            if await candidata.is_visible(timeout=600):
+                                await candidata.click(timeout=1_000)
+                                await page.wait_for_timeout(700)
+                                return True
+                        except Exception:
+                            pass
+
+                        try:
+                            await page.keyboard.press("Escape")
+                        except Exception:
+                            pass
                     return False
 
-                # Pestaña "Internet": es la del servicio fijo/hogar
-                try:
-                    tab = page.locator('text="Internet"').first
-                    if await tab.is_visible(timeout=4_000):
-                        await tab.click()
-                        await page.wait_for_timeout(2_500)
-                except Exception:
-                    pass
+                # Pestaña del portal (subclases eligen otra vía TAB_LABEL: "Internet"
+                # es el servicio fijo/hogar, "Pospago" la línea móvil). El campo
+                # "Ciudad" solo existe en la pestaña Internet, así que sirve para
+                # verificar cuál quedó activa: el clic por texto no siempre
+                # "agarra" a la primera (puede caer en el icono o en un nodo
+                # sin el listener), así que se reintenta con force si no cambió.
+                async def _pestana_correcta() -> bool:
+                    # Si el formulario todavía no terminó de montar, "Ciudad"
+                    # tampoco es visible en NINGUNA pestaña — eso se veía
+                    # igual que "ya estamos en Pospago" y daba por buena una
+                    # página a medio cargar. Esperar primero a que
+                    # "Identificador de pago" exista evita ese falso positivo.
+                    try:
+                        await page.locator('text="Identificador de pago"').first.wait_for(state="visible", timeout=5_000)
+                    except Exception:
+                        pass
+                    try:
+                        ciudad_visible = await page.locator('text="Ciudad"').first.is_visible(timeout=1_500)
+                    except Exception:
+                        ciudad_visible = False
+                    return ciudad_visible == (self.TAB_LABEL == "Internet")
 
-                await elegir("Movistar")
+                pestana_ok = await _pestana_correcta()
+                intentos = 0
+                while not pestana_ok and intentos < 3:
+                    try:
+                        tab = page.get_by_text(self.TAB_LABEL, exact=False).first
+                        await tab.click(force=(intentos > 0), timeout=4_000)
+                        await page.wait_for_timeout(2_000)
+                    except Exception:
+                        pass
+                    pestana_ok = await _pestana_correcta()
+                    intentos += 1
+                if not pestana_ok:
+                    print(f"[movistar] no se pudo activar la pestaña '{self.TAB_LABEL}' tras {intentos} intentos")
+
+                # El selector de operador solo existe en la pestaña Internet
+                # (línea fija); en Pospago no hay tal campo, y buscarlo igual
+                # agotaba hasta 20 intentos de fuerza bruta por nada (~1 min
+                # perdido en cada consulta de Movistar Móvil).
+                if self.TAB_LABEL != "Pospago":
+                    await elegir("Movistar")
                 if not await elegir(etiqueta):
+                    print(f"[movistar] pestana_ok antes de fallar etiqueta: {pestana_ok} (tab_label={self.TAB_LABEL})")
+                    try:
+                        await page.screenshot(path="/tmp/movistar_debug_etiqueta.png", full_page=True)
+                    except Exception:
+                        pass
                     return _blocked(
                         f"El portal de Movistar no ofrece la opción '{etiqueta}'. "
                         "Puede que hayan cambiado el formulario."
                     )
 
                 if tipo == "1":
-                    # referencia = indicativo (3) + línea (7)
-                    ref = re.sub(r"\D", "", account_reference)
-                    if len(ref) < 10:
-                        return _blocked(
-                            "Falta la ciudad de este servicio: Movistar consulta con el "
-                            "indicativo más los 7 dígitos de la línea. Elígela con el "
-                            "ícono ✏️ de la tarjeta del contrato."
-                        )
-                    indicativo, linea = ref[:3], ref[3:]
-                    ciudad = next(
-                        (c for c, ind in MOVISTAR_CIUDADES.items() if ind == indicativo), None
-                    )
-                    if not ciudad or not await elegir(ciudad):
-                        return _blocked(
-                            f"No se pudo seleccionar una ciudad con indicativo {indicativo}."
-                        )
-                    valor = linea
-                    selectores = ('input[name="landLine"]', 'input[name="phoneNumber"]',
-                                  'input[type="tel"]')
+                    resuelto = await self._resolver_numero_linea(page, elegir, account_reference, _blocked)
+                    if isinstance(resuelto, ScraperResult):
+                        return resuelto
+                    valor, selectores = resuelto
                 else:
                     valor = re.sub(r"\D", "", account_reference)
                     selectores = ('input[name="referenceNumber"]',
@@ -634,6 +827,11 @@ class MovistarScraper(PlaywrightScraper):
                     await page.keyboard.type(ch, delay=random.randint(70, 150))
                 await page.wait_for_timeout(1_200)
 
+                try:
+                    await page.screenshot(path="/tmp/movistar_debug_antes.png", full_page=True)
+                except Exception:
+                    pass
+
                 btn = page.locator('button:has-text("Continuar")').first
                 if not await btn.is_enabled():
                     return _blocked(
@@ -648,15 +846,50 @@ class MovistarScraper(PlaywrightScraper):
                         break
 
                 if respuesta is None:
+                    try:
+                        await page.screenshot(path="/tmp/movistar_debug_sin_respuesta.png", full_page=True)
+                    except Exception:
+                        pass
                     return _blocked(
                         "Movistar no respondió a la consulta. Es posible que su "
                         "verificación de seguridad la haya rechazado; intenta más tarde."
                     )
 
+                print(f"[movistar] /api/data-payment crudo: {respuesta!r}")
+                try:
+                    await page.screenshot(path="/tmp/movistar_debug.png", full_page=True)
+                except Exception:
+                    pass
+
                 return self._parsear(respuesta, account_reference)
 
             finally:
                 await ctx.close()
+
+    async def _resolver_numero_linea(self, page, elegir, account_reference: str, blocked):
+        """
+        Resuelve (valor, selectores) para el tipo '1' (número de línea).
+
+        Comportamiento por defecto: línea fija/hogar (pestaña "Internet") — el
+        portal pide indicativo de ciudad (3 dígitos) + línea (7 dígitos), y hay
+        que elegir la ciudad en un <select> antes de escribir el número.
+        MovistarMovilScraper lo sobreescribe: un celular colombiano no lleva
+        indicativo, así que ahí no hace falta elegir ciudad.
+        """
+        ref = re.sub(r"\D", "", account_reference)
+        if len(ref) < 10:
+            return blocked(
+                "Falta la ciudad de este servicio: Movistar consulta con el "
+                "indicativo más los 7 dígitos de la línea. Elígela con el "
+                "ícono ✏️ de la tarjeta del contrato."
+            )
+        indicativo, linea = ref[:3], ref[3:]
+        ciudad = next(
+            (c for c, ind in MOVISTAR_CIUDADES.items() if ind == indicativo), None
+        )
+        if not ciudad or not await elegir(ciudad):
+            return blocked(f"No se pudo seleccionar una ciudad con indicativo {indicativo}.")
+        return linea, ('input[name="landLine"]', 'input[name="phoneNumber"]', 'input[type="tel"]')
 
     def _parsear(self, r: dict, account_reference: str) -> ScraperResult:
         codigo = r.get("error")
@@ -666,16 +899,18 @@ class MovistarScraper(PlaywrightScraper):
         if codigo == 204:
             return ScraperResult(
                 amount=0, due_date=date.today() + timedelta(days=30),
-                reference=f"MOVISTAR-{account_reference}", provider="movistar",
+                reference=f"{self.REF_PREFIX}-{account_reference}", provider=self.PROVIDER_ID,
                 payment_url=self.PAYMENT_URL, is_up_to_date=True,
             )
         if codigo not in (0, None):
+            print(f"[movistar] respuesta no reconocida de /api/data-payment: {r!r}")
             return ScraperResult(
                 amount=0, due_date=date.today() + timedelta(days=15),
-                reference=f"MOVISTAR-{account_reference}", provider="movistar",
+                reference=f"{self.REF_PREFIX}-{account_reference}", provider=self.PROVIDER_ID,
                 payment_url=self.PAYMENT_URL, portal_blocked=True,
                 blocked_reason=(
-                    r.get("message") or "Movistar no pudo entregar la factura ahora mismo."
+                    _mensaje_legible(r.get("message"))
+                    or f"Movistar no pudo entregar la factura ahora mismo (código {codigo})."
                 ),
             )
 
@@ -699,7 +934,7 @@ class MovistarScraper(PlaywrightScraper):
         if monto <= 0:
             return ScraperResult(
                 amount=0, due_date=date.today() + timedelta(days=30),
-                reference=f"MOVISTAR-{account_reference}", provider="movistar",
+                reference=f"{self.REF_PREFIX}-{account_reference}", provider=self.PROVIDER_ID,
                 payment_url=self.PAYMENT_URL, is_up_to_date=True,
             )
 
@@ -726,9 +961,37 @@ class MovistarScraper(PlaywrightScraper):
 
         return ScraperResult(
             amount=monto, due_date=vence or (date.today() + timedelta(days=15)),
-            reference=f"MOVISTAR-{ref}", provider="movistar",
+            reference=f"{self.REF_PREFIX}-{ref}", provider=self.PROVIDER_ID,
             payment_url=self.PAYMENT_URL,
         )
+
+
+# ── Movistar Móvil (línea celular, pestaña "Pospago") ────────────────────────
+
+class MovistarMovilScraper(MovistarScraper):
+    """
+    Igual que MovistarScraper pero para la pestaña "Pospago" (línea móvil) en
+    vez de "Internet" (línea fija/hogar) — mismo portal, mismo parseo de
+    respuesta, formulario distinto.
+
+    Un celular colombiano no lleva indicativo de ciudad (a diferencia de una
+    línea fija), así que aquí el número de línea se usa tal cual, sin elegir
+    ciudad.
+    """
+    TAB_LABEL       = "Pospago"
+    PROVIDER_ID     = "movistar_movil"
+    REF_PREFIX      = "MOVISTAR-MOVIL"
+    PROFILE_ENV     = "MOVISTAR_MOVIL_PROFILE_DIR"
+    PROFILE_DEFAULT = "/var/lib/finsmart/chrome-movistar-movil"
+
+    async def _resolver_numero_linea(self, page, elegir, account_reference: str, blocked):
+        valor = re.sub(r"\D", "", account_reference)
+        if len(valor) != 10:
+            return blocked(
+                "El número de línea móvil debe tener 10 dígitos (ej: 3001234567)."
+            )
+        return valor, ('input[name="phoneNumber"]', 'input[name="mobileNumber"]',
+                        'input[type="tel"]')
 
 
 # ── GDO (Gases de Occidente - Cali) ──────────────────────────────────────────
@@ -876,6 +1139,16 @@ class GDOScraper(BaseScraper):
                 d4 = r.json() if r.status_code in (200, 500) else {}
                 if d4.get("error"):
                     msg4 = d4.get("mensaje", "")
+                    # GDO responde "ERROR CLIENTE SIN DEUDA" para contratos al día — esto
+                    # debe revisarse ANTES del genérico "no existe"/"cliente", porque ese
+                    # mensaje contiene la palabra "cliente" y quedaba mal clasificado como
+                    # contrato no encontrado.
+                    if _is_up_to_date(msg4):
+                        return ScraperResult(
+                            amount=0, due_date=date.today() + timedelta(days=30),
+                            reference=f"GDO-{account_reference}", provider="gdo",
+                            payment_url=self.PAYMENT_URL, is_up_to_date=True,
+                        )
                     if "no existe" in msg4.lower() or "cliente" in msg4.lower():
                         return _blocked(
                             f"El contrato '{account_reference}' no fue encontrado en GDO. "
@@ -992,6 +1265,17 @@ class GDOScraper(BaseScraper):
             d4 = r.json() if r.status_code in (200, 500) else {}
             if d4.get("error"):
                 msg4 = d4.get("mensaje", "")
+                # Ver el mismo comentario en fetch_invoice: "ERROR CLIENTE SIN DEUDA"
+                # contiene "cliente" y se clasificaba mal como contrato no encontrado.
+                if _is_up_to_date(msg4):
+                    return {
+                        "jwt": token,
+                        "banks": [],
+                        "amount": 0,
+                        "due_date": str(date.today() + timedelta(days=30)),
+                        "reference": f"GDO-{account_reference}",
+                        "is_up_to_date": True,
+                    }
                 if "no existe" in msg4.lower() or "cliente" in msg4.lower():
                     raise CredentialsError(
                         f"GDO no encontró el contrato '{account_reference}'. "
@@ -1158,6 +1442,7 @@ PROVIDER_REGISTRY: dict[str, BaseScraper] = {
     "triple_a":         MockScraper("triple_a"),
     "claro":            MockScraper("claro"),
     "movistar":         MovistarScraper(),
+    "movistar_movil":   MovistarMovilScraper(),
     "tigo":             MockScraper("tigo"),
     "wom":              MockScraper("wom"),
     "etb":              MockScraper("etb"),
@@ -1175,14 +1460,15 @@ PROVIDER_REGISTRY: dict[str, BaseScraper] = {
 PROVIDERS_LIST = [
     {"id": "emcali",           "name": "EMCALI",              "category": "Servicios Públicos", "logo_hint": "zap",      "real_scraper": True},
     {"id": "gdo",              "name": "GDO - Gases de Occidente", "category": "Servicios Públicos", "logo_hint": "flame", "real_scraper": True},
-    {"id": "epm",              "name": "EPM",                 "category": "Servicios Públicos", "logo_hint": "zap",      "real_scraper": True},
-    {"id": "codensa",          "name": "Codensa / Enel",      "category": "Servicios Públicos", "logo_hint": "zap",      "real_scraper": True},
+    {"id": "epm",              "name": "EPM",                 "category": "Servicios Públicos", "logo_hint": "zap",      "real_scraper": False},
+    {"id": "codensa",          "name": "Codensa / Enel",      "category": "Servicios Públicos", "logo_hint": "zap",      "real_scraper": False},
     {"id": "acueducto_bogota", "name": "Acueducto de Bogotá", "category": "Servicios Públicos", "logo_hint": "droplets", "real_scraper": False},
     {"id": "gas_natural",      "name": "Gas Natural",         "category": "Servicios Públicos", "logo_hint": "flame",    "real_scraper": False},
     {"id": "surtigas",         "name": "Surtigas",            "category": "Servicios Públicos", "logo_hint": "flame",    "real_scraper": False},
     {"id": "triple_a",         "name": "Triple A",            "category": "Servicios Públicos", "logo_hint": "droplets", "real_scraper": False},
     {"id": "claro",            "name": "Claro",               "category": "Telecomunicaciones", "logo_hint": "wifi",  "real_scraper": False},
-    {"id": "movistar",         "name": "Movistar",            "category": "Telecomunicaciones", "logo_hint": "wifi",  "real_scraper": True},
+    {"id": "movistar",         "name": "Movistar Hogar",      "category": "Telecomunicaciones", "logo_hint": "wifi",  "real_scraper": True},
+    {"id": "movistar_movil",  "name": "Movistar Móvil",       "category": "Telecomunicaciones", "logo_hint": "smartphone", "real_scraper": True},
     {"id": "tigo",             "name": "Tigo",                "category": "Telecomunicaciones", "logo_hint": "wifi",  "real_scraper": False},
     {"id": "wom",              "name": "WOM",                 "category": "Telecomunicaciones", "logo_hint": "wifi",  "real_scraper": False},
     {"id": "etb",              "name": "ETB",                 "category": "Telecomunicaciones", "logo_hint": "phone", "real_scraper": False},

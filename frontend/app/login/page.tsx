@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback, useEffect } from "react"
 import Link from "next/link"
 import { Wallet, Eye, EyeOff, ArrowLeft, Loader2, Lock, Brain, AlertTriangle, RefreshCcw } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -62,7 +62,12 @@ export default function LoginPage() {
 
   const isPrivate = focusedField === "password" || focusedField === "confirmPassword"
 
-  const fillTest = () => setFormData({ ...formData, email: "demo@finsmart.co", password: "demo1234" })
+  const fillTest = () => setFormData({ ...formData, email: "evaluacion@finsmart.co", password: "demo1234" })
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("mode") === "register") setIsLogin(false)
+  }, [])
 
   const triggerShake = useCallback(() => {
     setShaking(true)
@@ -96,8 +101,20 @@ export default function LoginPage() {
       } else {
         await register(formData.email, formData.password, formData.name)
       }
-    } catch {
-      setError(isLogin ? "Credenciales incorrectas. Intenta de nuevo." : "Error al crear la cuenta.")
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { detail?: string } }; request?: unknown }
+      const detail = axErr.response?.data?.detail
+      if (!axErr.response) {
+        setError("No se pudo conectar con el servidor. Verifica tu conexión e intenta de nuevo.")
+      } else if (detail === "Email already registered") {
+        setError("Ese correo ya está registrado. Inicia sesión en su lugar.")
+      } else if (detail === "Incorrect email or password") {
+        setError("Correo o contraseña incorrectos.")
+      } else if (typeof detail === "string" && detail.length > 0) {
+        setError(detail)
+      } else {
+        setError(isLogin ? "Credenciales incorrectas. Intenta de nuevo." : "Error al crear la cuenta. Intenta de nuevo.")
+      }
       triggerShake()
     } finally {
       setIsLoading(false)
@@ -170,7 +187,7 @@ export default function LoginPage() {
               style={{ backgroundColor: "#F0EDE7", border: "1px solid #E0DDD7" }}>
               <div>
                 <p className="text-xs font-bold" style={{ color: D }}>Cuenta de prueba</p>
-                <p className="text-xs mt-0.5" style={{ color: "#78716C" }}>demo@finsmart.co · demo1234</p>
+                <p className="text-xs mt-0.5" style={{ color: "#78716C" }}>evaluacion@finsmart.co · demo1234</p>
               </div>
               <Button type="button" size="sm" onClick={fillTest}
                 className="text-xs font-semibold hover:opacity-80"

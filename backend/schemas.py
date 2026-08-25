@@ -20,6 +20,10 @@ class UserRegister(BaseModel):
     full_name: str
 
 
+class AccountDeleteRequest(BaseModel):
+    password: str
+
+
 # ── User ──────────────────────────────────────────────────────────────────────
 
 class UserBase(BaseModel):
@@ -173,8 +177,13 @@ class SharedGroupMemberBase(BaseModel):
     email: Optional[str] = None
 
 
-class SharedGroupMemberCreate(SharedGroupMemberBase):
-    pass
+class SharedGroupMemberCreate(BaseModel):
+    name: str
+    email: EmailStr
+
+
+class SharedGroupMemberUpdate(BaseModel):
+    name: str
 
 
 class SharedGroupMemberResponse(SharedGroupMemberBase):
@@ -185,6 +194,12 @@ class SharedGroupMemberResponse(SharedGroupMemberBase):
     user_id: Optional[int] = None
     is_active: bool = True
     created_at: Optional[datetime] = None
+
+
+class MemberAddResult(BaseModel):
+    status: str  # "added" | "invited"
+    detail: str
+    member: Optional[SharedGroupMemberResponse] = None
 
 
 class SharedExpenseSplitBase(BaseModel):
@@ -203,6 +218,7 @@ class SharedExpenseSplitResponse(SharedExpenseSplitBase):
     expense_id: int
     is_settled: bool
     settled_at: Optional[datetime] = None
+    settled_by_user_id: Optional[int] = None
 
 
 class SharedExpenseBase(BaseModel):
@@ -297,6 +313,26 @@ class Balance(BaseModel):
     member_name: str
     net_balance: float
     owes_to: List[DebtItem] = []
+
+
+class SettleResult(BaseModel):
+    status: str  # "settled" | "requested"
+    detail: str
+    amount: float
+
+
+# ── Notificaciones ────────────────────────────────────────────────────────────
+
+class NotificationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    type: str
+    status: str
+    title: str
+    body: Optional[str] = None
+    group_id: Optional[int] = None
+    created_at: Optional[datetime] = None
 
 
 # ── Recurring ─────────────────────────────────────────────────────────────────
@@ -450,9 +486,40 @@ class PSEInitResponse(BaseModel):
     is_up_to_date: bool = False
 
 
+# ── PSE Payment (Movistar): sondeo en segundo plano ───────────────────────────
+# El flujo real (navegar el portal, reintentar si reCAPTCHA lo rechaza) puede
+# tardar más de un minuto; en vez de sostener una sola conexión HTTP todo ese
+# tiempo (frágil sobre túneles/proxies), el backend arranca el trabajo y el
+# frontend sondea el estado — mismo patrón que EmcaliCaptchaResponse.
+
+class MovistarPollStart(BaseModel):
+    estado: str        # siempre "consultando" al arrancar
+    poll_id: str
+
+
+class MovistarPollRequest(BaseModel):
+    poll_id: str
+
+
+class MovistarInitStatus(BaseModel):
+    estado: str        # "consultando" | "listo"
+    session_id: Optional[str] = None
+    banks: List[PSEBank] = []
+    amount: Optional[float] = None
+    due_date: Optional[str] = None
+    reference: Optional[str] = None
+    is_up_to_date: Optional[bool] = None
+
+
+class MovistarPayStatus(BaseModel):
+    estado: str        # "consultando" | "listo"
+    pse_url: Optional[str] = None
+
+
 class PSEPayRequest(BaseModel):
     session_id: str
     bank_code: str
+    guardar_datos: bool = False
 
 
 class PSEPayResponse(BaseModel):

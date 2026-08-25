@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { AuthProvider } from '@/contexts/auth-context'
+import { Toaster } from '@/components/ui/sonner'
 import './globals.css'
 
 const geist = Geist({ subsets: ["latin"] });
@@ -36,11 +37,12 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="es" className={`${geist.className} bg-background`}>
+    <html lang="es" data-scroll-behavior="smooth" className={`${geist.className} bg-background`}>
       <body className="antialiased min-h-screen">
         <AuthProvider>
           {children}
         </AuthProvider>
+        <Toaster />
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>

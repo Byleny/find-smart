@@ -47,6 +47,10 @@ export const authService = {
     return response.data
   },
 
+  async deleteAccount(password: string): Promise<void> {
+    await api.delete("/auth/me", { data: { password } })
+  },
+
   logout(): void {
     if (typeof window !== "undefined") {
       localStorage.removeItem("finsmart_token")

@@ -232,7 +232,11 @@ export interface GroupCreate {
 
 export interface MemberCreate {
   name: string
-  email?: string
+  email: string
+}
+
+export interface MemberUpdate {
+  name: string
 }
 
 export interface ExpenseCreate {
@@ -355,6 +359,29 @@ export interface PSEInitResponse {
 export interface PSEPayRequest {
   session_id: string
   bank_code: string
+  guardar_datos?: boolean
+}
+
+// Movistar PSE: arranca en segundo plano, el frontend sondea el resultado
+// (el flujo real puede tardar más de un minuto entre reintentos).
+export interface MovistarPollStart {
+  estado: "consultando"
+  poll_id: string
+}
+
+export interface MovistarInitStatus {
+  estado: "consultando" | "listo"
+  session_id?: string
+  banks: PSEBank[]
+  amount?: number
+  due_date?: string
+  reference?: string
+  is_up_to_date?: boolean
+}
+
+export interface MovistarPayStatus {
+  estado: "consultando" | "listo"
+  pse_url?: string
 }
 
 export interface PSEPayResponse {
@@ -415,4 +442,30 @@ export interface InvoiceLookupResult {
   payment_url: string
   is_demo: boolean
   is_up_to_date: boolean
+}
+
+// notifications
+export type NotificationType = "group_invite" | "settle_request"
+export type NotificationStatus = "pending" | "accepted" | "rejected"
+
+export interface AppNotification {
+  id: number
+  type: NotificationType
+  status: NotificationStatus
+  title: string
+  body?: string
+  group_id?: number
+  created_at: string
+}
+
+export interface MemberAddResult {
+  status: "added" | "invited"
+  detail: string
+  member?: SharedGroupMember
+}
+
+export interface SettleResult {
+  status: "settled" | "requested"
+  detail: string
+  amount: number
 }

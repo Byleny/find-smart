@@ -7,6 +7,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CurrencyInput } from "@/components/finsmart/currency-input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { goalService } from "@/lib/services/goals"
@@ -151,8 +152,8 @@ export default function MetasPage() {
               </div>
               <div>
                 <label className="text-sm font-medium text-foreground">Monto objetivo</label>
-                <Input type="number" min="1000" step="1000" placeholder="500000" value={form.target_amount}
-                  onChange={(e) => setForm({ ...form, target_amount: e.target.value })} className="mt-2" required />
+                <CurrencyInput placeholder="500.000" value={form.target_amount}
+                  onValueChange={(v) => setForm({ ...form, target_amount: v })} className="mt-2" required />
               </div>
               <div>
                 <label className="text-sm font-medium text-foreground">Fecha límite</label>
@@ -312,9 +313,9 @@ export default function MetasPage() {
                           <form onSubmit={(e) => handleContribution(e, goal.id)} className="space-y-4 mt-4">
                             <div>
                               <label className="text-sm font-medium text-foreground">Monto del aporte</label>
-                              <Input type="number" min="100" step="100" placeholder="50000"
+                              <CurrencyInput placeholder="50.000"
                                 value={contributionAmount}
-                                onChange={(e) => setContributionAmount(e.target.value)} className="mt-2" required />
+                                onValueChange={(v) => setContributionAmount(v)} className="mt-2" required />
                             </div>
                             <div>
                               <label className="text-sm font-medium text-foreground">Nota (opcional)</label>

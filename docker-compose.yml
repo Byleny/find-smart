@@ -13,8 +13,17 @@ services:
       ACCESS_TOKEN_EXPIRE_DAYS: "7"
       DATABASE_URL: sqlite:///./finsmart.db
       PYTHONUNBUFFERED: "1"
-    command: >
-      sh -c "python seed_completo.py; uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+      DISPLAY: ":99"
+      # Correo de notificaciones (invitación a grupo, confirmar pago, alerta de
+      # presupuesto). Vacío en dev: el envío se omite sin romper nada.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-FinSmart}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:3000}
+    command: ["sh", "start.sh", "--reload"]
     restart: unless-stopped
 
   frontend:

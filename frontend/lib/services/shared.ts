@@ -7,6 +7,9 @@ import type {
   MemberBalance,
   GroupCreate,
   MemberCreate,
+  MemberUpdate,
+  MemberAddResult,
+  SettleResult,
   ExpenseCreate,
   GroupFundContribution,
   GroupFundContributionCreate,
@@ -44,13 +47,37 @@ export const sharedService = {
   async addMember(
     groupId: number,
     data: MemberCreate
-  ): Promise<SharedGroupMember> {
+  ): Promise<MemberAddResult> {
     try {
-      const response = await api.post<SharedGroupMember>(
+      const response = await api.post<MemberAddResult>(
         `/shared/groups/${groupId}/members`,
         data
       )
       return response.data
+    } catch (error) {
+      throw error
+    }
+  },
+
+  async updateMember(
+    groupId: number,
+    memberId: number,
+    data: MemberUpdate
+  ): Promise<SharedGroupMember> {
+    try {
+      const response = await api.put<SharedGroupMember>(
+        `/shared/groups/${groupId}/members/${memberId}`,
+        data
+      )
+      return response.data
+    } catch (error) {
+      throw error
+    }
+  },
+
+  async removeMember(groupId: number, memberId: number): Promise<void> {
+    try {
+      await api.delete(`/shared/groups/${groupId}/members/${memberId}`)
     } catch (error) {
       throw error
     }
@@ -82,22 +109,24 @@ export const sharedService = {
     }
   },
 
-  async settleBetween(groupId: number, debtorId: number, creditorId: number): Promise<void> {
+  async settleBetween(groupId: number, debtorId: number, creditorId: number): Promise<SettleResult> {
     try {
-      await api.put(`/shared/groups/${groupId}/settle-between`, null, {
+      const response = await api.put<SettleResult>(`/shared/groups/${groupId}/settle-between`, null, {
         params: { debtor_id: debtorId, creditor_id: creditorId },
       })
+      return response.data
     } catch (error) {
       throw error
     }
   },
 
-  async settleSelectedSplits(groupId: number, splitIds: number[], creditorMemberId: number): Promise<void> {
+  async settleSelectedSplits(groupId: number, splitIds: number[], creditorMemberId: number): Promise<SettleResult> {
     try {
-      await api.post(`/shared/groups/${groupId}/settle-splits`, {
+      const response = await api.post<SettleResult>(`/shared/groups/${groupId}/settle-splits`, {
         split_ids: splitIds,
         creditor_member_id: creditorMemberId,
       })
+      return response.data
     } catch (error) {
       throw error
     }

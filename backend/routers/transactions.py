@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from database import get_db
-from models import User, Transaction
+from models import User, Transaction, Budget
+from services.email_service import send_budget_alert_email
 from schemas import (
     TransactionCreate,
     TransactionUpdate,
@@ -34,6 +35,40 @@ def _retrain_bg(user_id: int) -> None:
         pass
     finally:
         db.close()
+
+
+def _check_budget_alert(db: Session, user: User, tx: Transaction, background_tasks: BackgroundTasks) -> None:
+    """Avisa por correo cuando este gasto hace cruzar el 90% o el 100% del
+    presupuesto de su categoría. Se compara el gasto acumulado del mes antes
+    y después de esta transacción, así solo se manda el correo la vez que se
+    cruza el umbral — no en cada transacción posterior que ya lo tenía superado."""
+    budget = db.query(Budget).filter(
+        Budget.user_id == user.id, Budget.category == tx.category
+    ).first()
+    if not budget or budget.limit_amount <= 0:
+        return
+
+    today = date.today()
+    if tx.date.year != today.year or tx.date.month != today.month:
+        return
+
+    first_of_month = date(today.year, today.month, 1)
+    spent_after = db.query(func.coalesce(func.sum(Transaction.amount), 0.0)).filter(
+        Transaction.user_id == user.id,
+        Transaction.category == tx.category,
+        Transaction.type == "gasto",
+        Transaction.date >= first_of_month,
+        Transaction.date <= today,
+    ).scalar()
+    spent_before = spent_after - tx.amount
+    limit = budget.limit_amount
+    pct_before = spent_before / limit * 100
+    pct_after = spent_after / limit * 100
+
+    if pct_before < 100 <= pct_after:
+        background_tasks.add_task(send_budget_alert_email, user.email, tx.category, spent_after, limit, True)
+    elif pct_before < 90 <= pct_after:
+        background_tasks.add_task(send_budget_alert_email, user.email, tx.category, spent_after, limit, False)
 
 
 def _get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
@@ -90,6 +125,8 @@ async def create_transaction(
     db.commit()
     db.refresh(tx)
     background_tasks.add_task(_retrain_bg, current_user.id)
+    if tx.type == "gasto":
+        _check_budget_alert(db, current_user, tx, background_tasks)
     return tx
 
 
@@ -153,6 +190,8 @@ async def get_summary(
 
     category_map: dict[str, dict] = {}
     for t in txs:
+        if t.type != "gasto":
+            continue
         key = t.category
         if key not in category_map:
             category_map[key] = {"amount": 0.0, "count": 0}

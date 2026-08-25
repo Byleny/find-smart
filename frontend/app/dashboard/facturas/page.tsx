@@ -36,7 +36,7 @@ import { transactionService } from "@/lib/services/transactions"
 import { formatCOP } from "@/lib/format"
 import type {
   RecurringService, InvoiceResult, ProviderInfo, PSEInitResponse, PSEBank,
-  EmcaliCaptchaResponse,
+  EmcaliCaptchaResponse, MovistarInitStatus, MovistarPayStatus,
 } from "@/lib/types"
 
 // Indicativo por ciudad, igual que en el portal de Movistar: para el
@@ -57,6 +57,25 @@ interface FetchState {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// El flujo de PSE de Movistar arranca en segundo plano (puede tardar más de
+// un minuto con reintentos si el portal rechaza la consulta) y se sondea en
+// vez de sostener una sola conexión larga, que se cortaba de forma
+// intermitente sobre redes lentas/túneles.
+async function pollUntilDone<T extends { estado: string }>(
+  check: () => Promise<T>,
+  maxPolls = 40,       // ~80s de sondeo a 2s cada uno
+  intervalMs = 2000,
+): Promise<T> {
+  for (let intentos = 0; intentos < maxPolls; intentos++) {
+    const r = await check()
+    if (r.estado !== "consultando") return r
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+  // Con esta forma (no un Error plano), los catch existentes que leen
+  // err.response.data.detail muestran este mensaje en vez del genérico.
+  throw { response: { data: { detail: "La consulta a Movistar está tardando demasiado. Intenta de nuevo más tarde." } } }
+}
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -137,6 +156,8 @@ export default function FacturasPage() {
   const [pseBankCode, setPseBankCode] = useState("")
   const [pseLoading, setPseLoading] = useState(false)
   const [pseError, setPseError] = useState("")
+  // Movistar: guardar entidad+datos en su portal para el próximo pago
+  const [guardarDatos, setGuardarDatos] = useState(false)
 
   // ── Load data ───────────────────────────────────────────────────────────────
 
@@ -165,21 +186,32 @@ export default function FacturasPage() {
     setNewNumber("")
     setNewAlias("")
     setNewPayerEmail("")
+    setMvLinea("")
+    setMvIndicativo("602")
+    setMvTipo("1")
     setShowAdd(true)
   }
 
   async function handleAdd() {
     if (!selectedProvider) return
 
-    // Movistar identifica el pago por línea (indicativo + 7 dígitos) o por
-    // referencia de factura; el resto de proveedores usan el número tal cual.
+    // Movistar (línea fija) identifica el pago por indicativo+línea (7 dígitos)
+    // o por referencia de factura; Movistar Móvil usa el celular tal cual (10
+    // dígitos, sin indicativo); el resto de proveedores usan el número tal cual.
     const esMovistar = selectedProvider === "movistar"
+    const esMovistarMovil = selectedProvider === "movistar_movil"
     const referencia = esMovistar && mvTipo === "1"
       ? `${mvIndicativo}${mvLinea}`
+      : esMovistarMovil && mvTipo === "1"
+      ? mvLinea
       : newNumber.trim()
 
     if (esMovistar && mvTipo === "1" && mvLinea.length !== 7) {
       setAddError("El número de línea debe tener 7 dígitos.")
+      return
+    }
+    if (esMovistarMovil && mvTipo === "1" && mvLinea.length !== 10) {
+      setAddError("El número de línea móvil debe tener 10 dígitos.")
       return
     }
     if (!referencia) return
@@ -194,7 +226,7 @@ export default function FacturasPage() {
         account_reference: referencia,
         name: alias,
         payer_email: newPayerEmail.trim() || undefined,
-        payment_identifier: esMovistar ? mvTipo : undefined,
+        payment_identifier: (esMovistar || esMovistarMovil) ? mvTipo : undefined,
       })
       setNewNumber("")
       setNewAlias("")
@@ -223,15 +255,25 @@ export default function FacturasPage() {
     if (!editEmailContract) return
 
     const esMovistar = editEmailContract.provider === "movistar"
+    const esMovistarMovil = editEmailContract.provider === "movistar_movil"
+    const esGdo = editEmailContract.provider === "gdo"
     if (esMovistar && mvTipo === "1" && mvLinea.length !== 7) {
       setEditEmailError("El número de línea debe tener 7 dígitos.")
       return
     }
-    if (esMovistar && mvTipo === "2" && !newNumber.trim()) {
+    if (esMovistarMovil && mvTipo === "1" && mvLinea.length !== 10) {
+      setEditEmailError("El número de línea móvil debe tener 10 dígitos.")
+      return
+    }
+    if ((esMovistar || esMovistarMovil) && mvTipo === "2" && !newNumber.trim()) {
       setEditEmailError("Ingresa la referencia de pago.")
       return
     }
-    if (!esMovistar && !editEmailValue.trim()) return
+    if (esGdo && !editEmailValue.trim()) return
+    if (!esMovistar && !esMovistarMovil && !esGdo && !newNumber.trim()) {
+      setEditEmailError("Ingresa el número de contrato.")
+      return
+    }
 
     setSavingEmail(true)
     setEditEmailError("")
@@ -244,7 +286,14 @@ export default function FacturasPage() {
                 ? `${mvIndicativo}${mvLinea}` : newNumber.trim(),
               payment_identifier: mvTipo,
             }
-          : { payer_email: editEmailValue.trim() },
+          : esMovistarMovil
+          ? {
+              account_reference: mvTipo === "1" ? mvLinea : newNumber.trim(),
+              payment_identifier: mvTipo,
+            }
+          : esGdo
+          ? { payer_email: editEmailValue.trim() }
+          : { account_reference: newNumber.trim(), name: newAlias.trim() || undefined },
       )
       setContracts((prev) => prev.map((c) => c.id === editEmailContract.id ? { ...c, ...updated } : c))
       setEditEmailContract(null)
@@ -316,6 +365,55 @@ export default function FacturasPage() {
 
         setPseSession(data)
         setPseBankCode("")
+        setPseError("")
+        setShowPse(true)
+      } catch (err: unknown) {
+        const msg = (err as { response?: { data?: { detail?: string } } })
+          ?.response?.data?.detail ?? "Error al consultar la factura."
+        setFetchStates((prev) => ({
+          ...prev,
+          [contract.id]: { contractId: contract.id, status: "error", errorMsg: msg },
+        }))
+      }
+      return
+    }
+
+    // Movistar / Movistar Móvil: igual que GDO, pero el "Pagar" real de Movistar
+    // navega hasta el formulario de banco+datos personales (ver movistar_pse.py).
+    if (proveedor === "movistar" || proveedor === "movistar_movil") {
+      try {
+        const start = await invoiceService.movistarPseInit(contract.id)
+        const data: MovistarInitStatus = await pollUntilDone(() =>
+          invoiceService.movistarPseInitStatus(contract.id, start.poll_id)
+        )
+        setFetchStates((prev) => ({
+          ...prev,
+          [contract.id]: {
+            contractId: contract.id, status: "done", isUpToDate: data.is_up_to_date,
+          },
+        }))
+        setContracts((prev) =>
+          prev.map((c) =>
+            c.id === contract.id
+              ? { ...c, last_fetched_amount: data.is_up_to_date ? undefined : data.amount }
+              : c
+          )
+        )
+        setActiveContractId(contract.id)
+
+        if (data.is_up_to_date) {
+          const result = await invoiceService.fetchInvoice(contract.id)
+          setActiveResult(result)
+          return
+        }
+
+        setPseSession({
+          session_id: data.session_id!, banks: data.banks,
+          amount: data.amount!, due_date: data.due_date!,
+          reference: data.reference!, is_up_to_date: data.is_up_to_date ?? false,
+        })
+        setPseBankCode("")
+        setGuardarDatos(false)
         setPseError("")
         setShowPse(true)
       } catch (err: unknown) {
@@ -481,14 +579,30 @@ export default function FacturasPage() {
     if (!activeContractId || !pseSession || !pseBankCode) return
     setPseLoading(true)
     setPseError("")
+    const proveedor = contracts.find((c) => c.id === activeContractId)?.provider
+    const esMovistarAlgo = proveedor === "movistar" || proveedor === "movistar_movil"
     try {
-      const result = await invoiceService.psePay(activeContractId, {
-        session_id: pseSession.session_id,
-        bank_code: pseBankCode,
-      })
+      let pseUrl: string
+      if (esMovistarAlgo) {
+        const start = await invoiceService.movistarPsePay(activeContractId, {
+          session_id: pseSession.session_id,
+          bank_code: pseBankCode,
+          guardar_datos: guardarDatos,
+        })
+        const data: MovistarPayStatus = await pollUntilDone(() =>
+          invoiceService.movistarPsePayStatus(activeContractId!, start.poll_id)
+        )
+        pseUrl = data.pse_url!
+      } else {
+        const result = await invoiceService.psePay(activeContractId, {
+          session_id: pseSession.session_id,
+          bank_code: pseBankCode,
+        })
+        pseUrl = result.pse_url
+      }
       // Navegación en la misma pestaña: es lo que hace el portal de GDO y
       // ningún bloqueador de popups la interrumpe.
-      window.location.href = result.pse_url
+      window.location.href = pseUrl
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })
         ?.response?.data?.detail ?? "Error al generar el pago PSE."
@@ -505,7 +619,7 @@ export default function FacturasPage() {
     <div className="max-w-3xl mx-auto space-y-6">
 
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 mb-1">
             <Zap className="w-5 h-5 text-primary" />
@@ -516,7 +630,7 @@ export default function FacturasPage() {
             el valor exacto para que confirmes antes de pagar.
           </p>
         </div>
-        <Button onClick={openAdd} size="sm">
+        <Button onClick={openAdd} size="sm" className="self-start">
           <Plus className="w-4 h-4 mr-1" />
           Agregar contrato
         </Button>
@@ -588,36 +702,48 @@ export default function FacturasPage() {
                           <><RefreshCw className="w-3.5 h-3.5 mr-1.5" />Consultar factura</>
                         )}
                       </Button>
-                      {(contract.provider === "gdo" || contract.provider === "movistar") && (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="text-muted-foreground hover:text-foreground"
-                          title={contract.provider === "gdo"
-                            ? "Editar correo GDO" : "Editar datos de consulta"}
-                          onClick={() => {
-                            setEditEmailValue(contract.payer_email ?? "")
-                            setEditEmailError("")
-                            if (contract.provider === "movistar") {
-                              const ref = (contract.account_reference ?? "").replace(/\D/g, "")
-                              const tipo = contract.payment_identifier ?? "1"
-                              setMvTipo(tipo)
-                              if (tipo === "1" && ref.length >= 10) {
-                                setMvIndicativo(ref.slice(0, 3))
-                                setMvLinea(ref.slice(3))
-                              } else if (tipo === "1") {
-                                // Guardado sin indicativo: se conserva la línea
-                                setMvLinea(ref.slice(-7))
-                              } else {
-                                setNewNumber(ref)
-                              }
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="text-muted-foreground hover:text-foreground"
+                        title={contract.provider === "gdo"
+                          ? "Editar correo GDO"
+                          : contract.provider === "movistar" || contract.provider === "movistar_movil"
+                          ? "Editar datos de consulta" : "Editar contrato"}
+                        onClick={() => {
+                          setEditEmailValue(contract.payer_email ?? "")
+                          setEditEmailError("")
+                          if (contract.provider === "movistar") {
+                            const ref = (contract.account_reference ?? "").replace(/\D/g, "")
+                            const tipo = contract.payment_identifier ?? "1"
+                            setMvTipo(tipo)
+                            if (tipo === "1" && ref.length >= 10) {
+                              setMvIndicativo(ref.slice(0, 3))
+                              setMvLinea(ref.slice(3))
+                            } else if (tipo === "1") {
+                              // Guardado sin indicativo: se conserva la línea
+                              setMvLinea(ref.slice(-7))
+                            } else {
+                              setNewNumber(ref)
                             }
-                            setEditEmailContract(contract)
-                          }}
-                        >
-                          <Pencil className="w-4 h-4" />
-                        </Button>
-                      )}
+                          } else if (contract.provider === "movistar_movil") {
+                            const ref = (contract.account_reference ?? "").replace(/\D/g, "")
+                            const tipo = contract.payment_identifier ?? "1"
+                            setMvTipo(tipo)
+                            if (tipo === "1") {
+                              setMvLinea(ref.slice(-10))
+                            } else {
+                              setNewNumber(ref)
+                            }
+                          } else if (contract.provider !== "gdo") {
+                            setNewNumber(contract.account_reference ?? "")
+                            setNewAlias(contract.name ?? "")
+                          }
+                          setEditEmailContract(contract)
+                        }}
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </Button>
                       <Button
                         size="icon"
                         variant="ghost"
@@ -705,7 +831,7 @@ export default function FacturasPage() {
                 </div>
 
                 {mvTipo === "1" ? (
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-[minmax(110px,1fr)_2fr] gap-2">
                     <div className="space-y-2">
                       <Label>Ciudad *</Label>
                       <div className="relative">
@@ -720,7 +846,7 @@ export default function FacturasPage() {
                         </select>
                       </div>
                     </div>
-                    <div className="col-span-2 space-y-2">
+                    <div className="space-y-2">
                       <Label>N° de línea *</Label>
                       <Input
                         className="bg-secondary border-0 font-mono"
@@ -750,6 +876,56 @@ export default function FacturasPage() {
                 <p className="text-xs text-muted-foreground">
                   {mvTipo === "1"
                     ? `Se consultará como ${mvIndicativo}${mvLinea || "·······"}, igual que en el portal de Movistar.`
+                    : "La referencia que aparece en tu factura de Movistar."}
+                </p>
+              </div>
+            ) : selectedProvider === "movistar_movil" ? (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Identificador de pago *</Label>
+                  <div className="relative">
+                    <select
+                      className="w-full rounded-md bg-secondary border-0 px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring appearance-none pr-8"
+                      value={mvTipo}
+                      onChange={(e) => setMvTipo(e.target.value)}
+                    >
+                      <option value="1">Con número de línea</option>
+                      <option value="2">Con referencia de pago</option>
+                    </select>
+                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+                  </div>
+                </div>
+
+                {mvTipo === "1" ? (
+                  <div className="space-y-2">
+                    <Label>Número de línea móvil *</Label>
+                    <Input
+                      className="bg-secondary border-0 font-mono"
+                      inputMode="numeric"
+                      placeholder="Ej: 3001234567"
+                      value={mvLinea}
+                      maxLength={10}
+                      onChange={(e) => setMvLinea(e.target.value.replace(/\D/g, ""))}
+                      onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Label>Referencia de pago *</Label>
+                    <Input
+                      className="bg-secondary border-0 font-mono"
+                      inputMode="numeric"
+                      placeholder="Número de referencia"
+                      value={newNumber}
+                      maxLength={11}
+                      onChange={(e) => setNewNumber(e.target.value.replace(/\D/g, ""))}
+                      onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+                    />
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  {mvTipo === "1"
+                    ? `Se consultará como ${mvLinea || "··········"}, igual que en el portal de Movistar.`
                     : "La referencia que aparece en tu factura de Movistar."}
                 </p>
               </div>
@@ -808,6 +984,8 @@ export default function FacturasPage() {
                 !selectedProvider || adding ||
                 (selectedProvider === "movistar"
                   ? (mvTipo === "1" ? mvLinea.length !== 7 : !newNumber.trim())
+                  : selectedProvider === "movistar_movil"
+                  ? (mvTipo === "1" ? mvLinea.length !== 10 : !newNumber.trim())
                   : !newNumber.trim()) ||
                 (selectedProvider === "gdo" && !newPayerEmail.trim())
               }
@@ -1075,13 +1253,17 @@ export default function FacturasPage() {
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>
-              {editEmailContract?.provider === "movistar"
-                ? "Datos de consulta Movistar" : "Correo de verificación GDO"}
+              {editEmailContract?.provider === "movistar" || editEmailContract?.provider === "movistar_movil"
+                ? "Datos de consulta Movistar"
+                : editEmailContract?.provider === "gdo"
+                ? "Correo de verificación GDO" : "Editar contrato"}
             </DialogTitle>
             <DialogDescription>
-              {editEmailContract?.provider === "movistar"
+              {editEmailContract?.provider === "movistar" || editEmailContract?.provider === "movistar_movil"
                 ? "Cómo identifica Movistar este servicio al consultar la factura."
-                : "GDO valida la consulta contra el correo del titular de este contrato."}
+                : editEmailContract?.provider === "gdo"
+                ? "GDO valida la consulta contra el correo del titular de este contrato."
+                : "Actualiza el alias o el número de contrato guardado."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 pt-1">
@@ -1102,7 +1284,7 @@ export default function FacturasPage() {
                   </div>
                 </div>
                 {mvTipo === "1" ? (
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-[minmax(110px,1fr)_2fr] gap-2">
                     <div className="space-y-2">
                       <Label>Ciudad *</Label>
                       <select
@@ -1115,7 +1297,7 @@ export default function FacturasPage() {
                         ))}
                       </select>
                     </div>
-                    <div className="col-span-2 space-y-2">
+                    <div className="space-y-2">
                       <Label>N° de línea *</Label>
                       <Input
                         className="bg-secondary border-0 font-mono"
@@ -1148,7 +1330,56 @@ export default function FacturasPage() {
                     : "La referencia que aparece en tu factura."}
                 </p>
               </>
-            ) : (
+            ) : editEmailContract?.provider === "movistar_movil" ? (
+              <>
+                <div className="space-y-2">
+                  <Label>Identificador de pago *</Label>
+                  <div className="relative">
+                    <select
+                      className="w-full rounded-md bg-secondary border-0 px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring appearance-none pr-8"
+                      value={mvTipo}
+                      onChange={(e) => setMvTipo(e.target.value)}
+                    >
+                      <option value="1">Con número de línea</option>
+                      <option value="2">Con referencia de pago</option>
+                    </select>
+                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+                  </div>
+                </div>
+                {mvTipo === "1" ? (
+                  <div className="space-y-2">
+                    <Label>Número de línea móvil *</Label>
+                    <Input
+                      className="bg-secondary border-0 font-mono"
+                      inputMode="numeric"
+                      placeholder="Ej: 3001234567"
+                      maxLength={10}
+                      value={mvLinea}
+                      onChange={(e) => setMvLinea(e.target.value.replace(/\D/g, ""))}
+                      onKeyDown={(e) => e.key === "Enter" && handleSaveEmail()}
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Label>Referencia de pago *</Label>
+                    <Input
+                      className="bg-secondary border-0 font-mono"
+                      inputMode="numeric"
+                      placeholder="Número de referencia"
+                      maxLength={11}
+                      value={newNumber}
+                      onChange={(e) => setNewNumber(e.target.value.replace(/\D/g, ""))}
+                      onKeyDown={(e) => e.key === "Enter" && handleSaveEmail()}
+                    />
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  {mvTipo === "1"
+                    ? `Se consultará como ${mvLinea || "··········"}.`
+                    : "La referencia que aparece en tu factura."}
+                </p>
+              </>
+            ) : editEmailContract?.provider === "gdo" ? (
               <div className="space-y-2">
                 <Label>Correo registrado en GDO *</Label>
                 <Input
@@ -1164,6 +1395,29 @@ export default function FacturasPage() {
                   persona, no el de tu cuenta FinSmart.
                 </p>
               </div>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label>Número de contrato / suscripción *</Label>
+                  <Input
+                    className="bg-secondary border-0 font-mono"
+                    placeholder="Ej: 1234567890"
+                    value={newNumber}
+                    onChange={(e) => setNewNumber(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSaveEmail()}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Alias (opcional)</Label>
+                  <Input
+                    className="bg-secondary border-0"
+                    placeholder="Ej: Casa principal, Apartamento"
+                    value={newAlias}
+                    onChange={(e) => setNewAlias(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSaveEmail()}
+                  />
+                </div>
+              </>
             )}
             {editEmailError && (
               <div className="flex items-center gap-2 text-destructive text-sm">
@@ -1176,7 +1430,11 @@ export default function FacturasPage() {
               onClick={handleSaveEmail}
               disabled={savingEmail || (editEmailContract?.provider === "movistar"
                 ? (mvTipo === "1" ? mvLinea.length !== 7 : !newNumber.trim())
-                : !editEmailValue.trim())}
+                : editEmailContract?.provider === "movistar_movil"
+                ? (mvTipo === "1" ? mvLinea.length !== 10 : !newNumber.trim())
+                : editEmailContract?.provider === "gdo"
+                ? !editEmailValue.trim()
+                : !newNumber.trim())}
             >
               {savingEmail
                 ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</>
@@ -1313,6 +1571,23 @@ export default function FacturasPage() {
                   <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
                 </div>
               </div>
+
+              {/* Movistar: guardar datos para el próximo pago con esta entidad */}
+              {(() => {
+                const proveedorActivo = contracts.find((c) => c.id === activeContractId)?.provider
+                if (proveedorActivo !== "movistar" && proveedorActivo !== "movistar_movil") return null
+                return (
+                  <label className="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={guardarDatos}
+                      onChange={(e) => setGuardarDatos(e.target.checked)}
+                    />
+                    Guardar mis datos en Movistar para el próximo pago con esta entidad
+                  </label>
+                )
+              })()}
 
               {/* Error */}
               {pseError && (

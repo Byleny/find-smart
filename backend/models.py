@@ -9,6 +9,7 @@ from database import Base
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
@@ -152,6 +153,7 @@ class SharedExpenseSplit(Base):
     amount = Column(Float, nullable=False)
     is_settled = Column(Boolean, default=False)
     settled_at = Column(DateTime, nullable=True)
+    settled_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     expense = relationship("SharedExpense", back_populates="splits")
     member = relationship("SharedGroupMember", back_populates="splits")
@@ -215,3 +217,21 @@ class Invoice(Base):
     qr_data = Column(Text, nullable=True)
 
     service = relationship("RecurringService", back_populates="invoices")
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # destinatario
+    type = Column(String, nullable=False)  # "group_invite" | "settle_request"
+    status = Column(String, nullable=False, default="pending")  # "pending" | "accepted" | "rejected"
+    title = Column(String, nullable=False)
+    body = Column(String, nullable=True)
+    group_id = Column(Integer, ForeignKey("shared_groups.id", ondelete="CASCADE"), nullable=True)
+    payload = Column(Text, nullable=True)  # JSON con datos específicos del tipo
+    created_at = Column(DateTime, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+    group = relationship("SharedGroup")

@@ -188,6 +188,30 @@ async def _recorte(page) -> dict | None:
     }
 
 
+async def _recorte_estable(page, intentos: int = 6, espera_entre: int = 450) -> dict | None:
+    """
+    Repite la captura hasta que dos capturas seguidas sean idénticas.
+
+    Cuando se marca una casilla, Google la reemplaza por una imagen nueva que
+    llega desde su CDN unos cientos de ms después del clic. Capturar antes de
+    que termine de cargar deja el recorte con esa casilla en blanco o a medio
+    dibujar: el usuario no ve que apareció nada nuevo, no la marca, y al pulsar
+    VERIFICAR el desafío la rechaza pidiendo validar también esas imágenes.
+    Esperar a que dos capturas seguidas salgan iguales evita devolver un
+    recorte a medio cargar.
+    """
+    anterior = None
+    for _ in range(intentos):
+        recorte = await _recorte(page)
+        if recorte is None:
+            return anterior
+        if anterior is not None and recorte["imagen"] == anterior["imagen"]:
+            return recorte
+        anterior = recorte
+        await page.wait_for_timeout(espera_entre)
+    return anterior
+
+
 async def _pulsar_enviar(page) -> bool:
     """Pulsa 'Paga tu factura' si está habilitado."""
     try:
@@ -320,6 +344,15 @@ async def _abrir(ses: _Sesion) -> dict:
 
     con_display = _ensure_display()
     os.makedirs(_PERFIL, exist_ok=True)
+    # Si una sesión anterior no cerró limpio (timeout, proceso matado), el
+    # candado de Chrome se queda ahí y bloquea cualquier lanzamiento nuevo con
+    # "Opening in existing browser session". Solo una sesión usa este perfil
+    # a la vez, así que es seguro limpiarlo antes de abrir.
+    for _nombre in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        try:
+            os.remove(os.path.join(_PERFIL, _nombre))
+        except OSError:
+            pass
     ses.playwright = await async_playwright().start()
 
     # Configuración recomendada por patchright: Chrome real, perfil persistente y
@@ -418,7 +451,7 @@ async def _estado_actual(ses: _Sesion, espera_api: int = 3) -> dict:
         return listo() if ses.respuesta is not None else {
             "estado": "consultando", "session_id": ses.id}
 
-    recorte = await _recorte(page)
+    recorte = await _recorte_estable(page)
     if recorte:
         return {"estado": "desafio", "session_id": ses.id, **recorte}
 
@@ -443,7 +476,7 @@ async def _clic(ses: _Sesion, x: float, y: float) -> dict:
     await page.mouse.move(px, py, steps=random.randint(4, 9))
     await page.wait_for_timeout(random.randint(90, 220))
     await page.mouse.click(px, py)
-    await page.wait_for_timeout(1_200)
+    await page.wait_for_timeout(500)
 
     return await _estado_actual(ses, espera_api=12)
 

@@ -122,9 +122,13 @@ async def fetch_invoice_endpoint(
     try:
         result = scraper_fetch(service.provider, service.account_reference)
     except Exception as exc:
+        # No exponer el texto crudo de la excepción al cliente (puede traer
+        # rutas internas o detalles de Playwright) — se registra en el log
+        # del servidor y se devuelve solo un mensaje genérico.
+        print(f"[recurring] Could not fetch invoice for service {service.id}: {exc!r}")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Could not fetch invoice: {exc}",
+            detail="No se pudo consultar la factura en este momento.",
         )
 
     qr_base64 = generate_payment_qr(

@@ -1,3 +1,4 @@
+import os
 import traceback
 
 from fastapi import FastAPI, Request
@@ -6,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from database import engine, Base
 import models
-from routers import auth, transactions, budgets, saving_goals, shared, recurring, invoices
+from routers import auth, transactions, budgets, saving_goals, shared, recurring, invoices, notifications
 
 Base.metadata.create_all(bind=engine)
 
@@ -27,6 +28,7 @@ with engine.connect() as _conn:
         "ALTER TABLE recurring_services ADD COLUMN payer_email TEXT",
         # Movistar: '1' = con número de línea, '2' = con referencia de pago
         "ALTER TABLE recurring_services ADD COLUMN payment_identifier TEXT",
+        "ALTER TABLE shared_expense_splits ADD COLUMN settled_by_user_id INTEGER REFERENCES users(id)",
         "ALTER TABLE saving_contributions ADD COLUMN date TEXT DEFAULT (date('now'))",
         "ALTER TABLE shared_groups ADD COLUMN group_type TEXT DEFAULT 'gastos'",
         "ALTER TABLE saving_goals ADD COLUMN current_amount REAL DEFAULT 0.0",
@@ -46,6 +48,18 @@ with engine.connect() as _conn:
             _conn.commit()
         except Exception:
             pass  # column already exists
+
+    # Scrub email off inactive (departed/removed) membership rows so they can
+    # never be silently re-linked, via the backfill below or a future
+    # add_member call, to a different account that later registers under
+    # that same address.
+    try:
+        _conn.execute(_text(
+            "UPDATE shared_group_members SET email = NULL WHERE is_active = 0 AND email IS NOT NULL"
+        ))
+        _conn.commit()
+    except Exception:
+        pass
 
     # Backfill: link member records to users where email matches
     try:
@@ -79,12 +93,22 @@ with engine.connect() as _conn:
 
 app = FastAPI(title="FinSmart API", version="1.0.0")
 
+# El navegador nunca llama al backend cruzando orígenes en el despliegue real
+# (Next.js hace el proxy server-side vía rewrites), así que restringir esto
+# no debería romper nada — pero "*" sí amplía la superficie si el JWT se
+# filtrara por XSS: cualquier sitio podría llamar a la API con ese token.
+# Configurable por si el dominio de despliegue cambia sin tocar código.
+_cors_origins = [
+    o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -94,6 +118,7 @@ app.include_router(saving_goals.router, prefix="/goals", tags=["goals"])
 app.include_router(shared.router, prefix="/shared", tags=["shared"])
 app.include_router(recurring.router, prefix="/recurring", tags=["recurring"])
 app.include_router(invoices.router, prefix="/invoices", tags=["invoices"])
+app.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 
 
 @app.exception_handler(Exception)

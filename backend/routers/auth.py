@@ -5,8 +5,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import User
-from schemas import Token, UserRegister, UserResponse, UserUpdate
+from models import User, Transaction, Budget, SavingGoal, SavingContribution, RecurringService, Invoice, Notification
+from schemas import Token, UserRegister, UserResponse, UserUpdate, AccountDeleteRequest
 from security import (
     ACCESS_TOKEN_EXPIRE_DAYS,
     create_access_token,
@@ -16,6 +16,8 @@ from security import (
     SECRET_KEY,
     ALGORITHM,
 )
+from services.ml_service import delete_user_models
+from routers.shared import leave_all_groups_for_user
 from jose import JWTError, jwt
 
 router = APIRouter()
@@ -99,3 +101,42 @@ async def update_me(
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_account(
+    payload: AccountDeleteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    if not verify_password(payload.password, current_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Contraseña incorrecta")
+
+    user_id = current_user.id
+
+    # Detach from every shared group first (transfers/deletes as needed, and
+    # scrubs this account's email off any membership row so it can never be
+    # silently re-linked to a future, different registration under the same
+    # address).
+    leave_all_groups_for_user(current_user, db)
+
+    goal_ids = [g.id for g in db.query(SavingGoal).filter(SavingGoal.user_id == user_id).all()]
+    if goal_ids:
+        db.query(SavingContribution).filter(SavingContribution.goal_id.in_(goal_ids)).delete(synchronize_session=False)
+        db.query(SavingGoal).filter(SavingGoal.id.in_(goal_ids)).delete(synchronize_session=False)
+
+    service_ids = [s.id for s in db.query(RecurringService).filter(RecurringService.user_id == user_id).all()]
+    if service_ids:
+        db.query(Invoice).filter(Invoice.service_id.in_(service_ids)).delete(synchronize_session=False)
+        db.query(RecurringService).filter(RecurringService.id.in_(service_ids)).delete(synchronize_session=False)
+
+    db.query(Budget).filter(Budget.user_id == user_id).delete(synchronize_session=False)
+    db.query(Transaction).filter(Transaction.user_id == user_id).delete(synchronize_session=False)
+    db.query(Notification).filter(Notification.user_id == user_id).delete(synchronize_session=False)
+
+    db.delete(current_user)
+    db.commit()
+
+    # Trained models are per-user files on disk — not covered by the DB
+    # transaction above, so they're removed only once the delete is committed.
+    delete_user_models(user_id)

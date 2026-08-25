@@ -4,16 +4,19 @@ import { useState, useEffect, useCallback, useMemo } from "react"
 import {
   Plus, Users, UserPlus, Wallet, CheckCircle2, Circle,
   Home, Lightbulb, Droplets, Wifi, ShoppingCart, Car, Phone, Loader2, Link2, LogOut,
-  AlertTriangle, ChevronDown, ChevronUp, Receipt, PiggyBank
+  AlertTriangle, ChevronDown, ChevronUp, Receipt, PiggyBank, Pencil, Trash2
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CurrencyInput } from "@/components/finsmart/currency-input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { toast } from "sonner"
 import { sharedService } from "@/lib/services/shared"
 import { useAuth } from "@/contexts/auth-context"
 import type { SharedGroup, GroupDetail, MemberBalance, FundStatus } from "@/lib/types"
 import { formatCOP } from "@/lib/format"
+import { getErrorMessage } from "@/lib/utils"
 
 const expenseIcons: Record<string, React.ElementType> = {
   "Servicios públicos": Lightbulb, "Agua": Droplets, "Internet": Wifi,
@@ -35,6 +38,13 @@ export default function CompartidosPage() {
   const [newMemberDialog, setNewMemberDialog] = useState(false)
   const [newExpenseDialog, setNewExpenseDialog] = useState(false)
   const [leaveDialog, setLeaveDialog] = useState(false)
+  const [editMemberDialog, setEditMemberDialog] = useState<{ id: number; name: string } | null>(null)
+  const [editMemberName, setEditMemberName] = useState("")
+  const [editMemberError, setEditMemberError] = useState("")
+  const [isSavingMember, setIsSavingMember] = useState(false)
+  const [removeMemberDialog, setRemoveMemberDialog] = useState<{ id: number; name: string } | null>(null)
+  const [removeMemberError, setRemoveMemberError] = useState("")
+  const [isRemovingMember, setIsRemovingMember] = useState(false)
 
   const [groupForm, setGroupForm] = useState({ name: "", description: "", group_type: "gastos" as "gastos" | "fondo" })
   const [fundStatus, setFundStatus] = useState<FundStatus | null>(null)
@@ -49,6 +59,12 @@ export default function CompartidosPage() {
   const [memberPcts, setMemberPcts] = useState<Record<number, number>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isLeaving, setIsLeaving] = useState(false)
+  const [createGroupError, setCreateGroupError] = useState("")
+  const [memberError, setMemberError] = useState("")
+  const [expenseError, setExpenseError] = useState("")
+  const [fundError, setFundError] = useState("")
+  const [leaveError, setLeaveError] = useState("")
+  const [settleError, setSettleError] = useState("")
   const [selectedExpenseMonth, setSelectedExpenseMonth] = useState("all")
   const [selectedFundMonth, setSelectedFundMonth] = useState(() => new Date().toISOString().slice(0, 7))
   const [settlingKey, setSettlingKey] = useState<string | null>(null)
@@ -97,18 +113,21 @@ export default function CompartidosPage() {
         setBalances(bal)
         setFundStatus(null)
       }
-      // Always reset member selections and month filters when loading a group
+      // Always reset member selections and month filters when loading a group.
+      // Por defecto, quien registra el gasto es quien lo pagó — el creador del
+      // grupo solo debe quedar seleccionado si es él quien está usando la app.
       if (detail.members.length > 0) {
-        const firstId = String(detail.members[0].id)
-        setExpenseForm(prev => ({ ...prev, paid_by_id: firstId }))
-        setFundForm(prev => ({ ...prev, member_id: firstId }))
+        const self = detail.members.find(m => m.is_active && m.user_id === currentUser?.id)
+        const defaultId = String((self ?? detail.members[0]).id)
+        setExpenseForm(prev => ({ ...prev, paid_by_id: defaultId }))
+        setFundForm(prev => ({ ...prev, member_id: defaultId }))
       }
       setSelectedExpenseMonth("all")
       setSelectedFundMonth(new Date().toISOString().slice(0, 7))
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [currentUser?.id])
 
   useEffect(() => { loadGroups() }, [loadGroups])
   useEffect(() => { if (activeGroupId) loadDetail(activeGroupId) }, [activeGroupId, loadDetail])
@@ -116,12 +135,15 @@ export default function CompartidosPage() {
   const handleCreateGroup = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsSubmitting(true)
+    setCreateGroupError("")
     try {
       const g = await sharedService.createGroup({ name: groupForm.name, description: groupForm.description || undefined, group_type: groupForm.group_type })
       setNewGroupDialog(false)
       setGroupForm({ name: "", description: "", group_type: "gastos" })
       await loadGroups()
       setActiveGroupId(g.id)
+    } catch (err: unknown) {
+      setCreateGroupError(getErrorMessage(err, "No se pudo crear el grupo. Intenta de nuevo."))
     } finally { setIsSubmitting(false) }
   }
 
@@ -129,12 +151,44 @@ export default function CompartidosPage() {
     e.preventDefault()
     if (!activeGroupId) return
     setIsSubmitting(true)
+    setMemberError("")
     try {
-      await sharedService.addMember(activeGroupId, { name: memberForm.name, email: memberForm.email || undefined })
+      const result = await sharedService.addMember(activeGroupId, { name: memberForm.name, email: memberForm.email })
       setNewMemberDialog(false)
       setMemberForm({ name: "", email: "" })
+      if (result.status === "invited") toast.info(result.detail)
+      else toast.success(result.detail)
       await loadDetail(activeGroupId)
+    } catch (err: unknown) {
+      setMemberError(getErrorMessage(err, "No se pudo agregar el miembro. Intenta de nuevo."))
     } finally { setIsSubmitting(false) }
+  }
+
+  const handleEditMember = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!activeGroupId || !editMemberDialog) return
+    setIsSavingMember(true)
+    setEditMemberError("")
+    try {
+      await sharedService.updateMember(activeGroupId, editMemberDialog.id, { name: editMemberName })
+      setEditMemberDialog(null)
+      await loadDetail(activeGroupId)
+    } catch (err: unknown) {
+      setEditMemberError(getErrorMessage(err, "No se pudo actualizar el miembro. Intenta de nuevo."))
+    } finally { setIsSavingMember(false) }
+  }
+
+  const handleRemoveMember = async () => {
+    if (!activeGroupId || !removeMemberDialog) return
+    setIsRemovingMember(true)
+    setRemoveMemberError("")
+    try {
+      await sharedService.removeMember(activeGroupId, removeMemberDialog.id)
+      setRemoveMemberDialog(null)
+      await loadDetail(activeGroupId)
+    } catch (err: unknown) {
+      setRemoveMemberError(getErrorMessage(err, "No se pudo eliminar el miembro. Intenta de nuevo."))
+    } finally { setIsRemovingMember(false) }
   }
 
   const handleAddExpense = async (e: React.FormEvent) => {
@@ -155,6 +209,7 @@ export default function CompartidosPage() {
       ? (groupDetail.members.find(m => m.is_active)?.id ?? 0)
       : parseInt(expenseForm.paid_by_id)
     setIsSubmitting(true)
+    setExpenseError("")
     try {
       await sharedService.addExpense(activeGroupId, {
         description: expenseForm.description,
@@ -169,37 +224,52 @@ export default function CompartidosPage() {
       setSplitMode("equal")
       setMemberPcts({})
       await loadDetail(activeGroupId)
+    } catch (err: unknown) {
+      setExpenseError(getErrorMessage(err, "No se pudo registrar el gasto. Intenta de nuevo."))
     } finally { setIsSubmitting(false) }
   }
 
-  const handleSettle = async (debtorMemberId: number, creditorMemberId: number) => {
-    if (!activeGroupId) return
+  const handleSettle = async (debtorMemberId: number, creditorMemberId: number): Promise<boolean> => {
+    if (!activeGroupId) return false
     const key = `${debtorMemberId}-${creditorMemberId}`
     setSettlingKey(key)
+    setSettleError("")
     try {
-      await sharedService.settleBetween(activeGroupId, debtorMemberId, creditorMemberId)
+      const result = await sharedService.settleBetween(activeGroupId, debtorMemberId, creditorMemberId)
+      if (result.status === "requested") toast.info(result.detail)
+      else toast.success(result.detail)
       await loadDetail(activeGroupId)
+      return true
+    } catch (err: unknown) {
+      setSettleError(getErrorMessage(err, "No se pudo registrar el pago. Intenta de nuevo."))
+      return false
     } finally { setSettlingKey(null) }
   }
 
   const handlePartialSettle = async () => {
     if (!activeGroupId || !paymentDialog || selectedSplitIds.size === 0) return
     setIsSettlingPartial(true)
+    setSettleError("")
     try {
-      await sharedService.settleSelectedSplits(
+      const result = await sharedService.settleSelectedSplits(
         activeGroupId,
         Array.from(selectedSplitIds),
         paymentDialog.creditorId,
       )
       setPaymentDialog(null)
       setSelectedSplitIds(new Set())
+      if (result.status === "requested") toast.info(result.detail)
+      else toast.success(result.detail)
       await loadDetail(activeGroupId)
+    } catch (err: unknown) {
+      setSettleError(getErrorMessage(err, "No se pudo registrar el pago. Intenta de nuevo."))
     } finally { setIsSettlingPartial(false) }
   }
 
   const handleLeaveGroup = async () => {
     if (!activeGroupId) return
     setIsLeaving(true)
+    setLeaveError("")
     try {
       await sharedService.leaveGroup(activeGroupId)
       setLeaveDialog(false)
@@ -207,6 +277,8 @@ export default function CompartidosPage() {
       setGroupDetail(null)
       setBalances([])
       await loadGroups()
+    } catch (err: unknown) {
+      setLeaveError(getErrorMessage(err, "No se pudo salir del grupo. Intenta de nuevo."))
     } finally { setIsLeaving(false) }
   }
 
@@ -214,6 +286,7 @@ export default function CompartidosPage() {
     e.preventDefault()
     if (!activeGroupId) return
     setIsContributing(true)
+    setFundError("")
     try {
       await sharedService.contributeFund(activeGroupId, {
         member_id: parseInt(fundForm.member_id),
@@ -224,11 +297,14 @@ export default function CompartidosPage() {
       setFundDialog(false)
       setFundForm(prev => ({ ...prev, amount: "", note: "" }))
       await loadDetail(activeGroupId)
+    } catch (err: unknown) {
+      setFundError(getErrorMessage(err, "No se pudo registrar el aporte. Intenta de nuevo."))
     } finally { setIsContributing(false) }
   }
 
   const isFondo = groupDetail?.group_type === "fondo"
   const totalExpenses = groupDetail?.expenses.reduce((s, e) => s + e.amount, 0) ?? 0
+  const activeMembers = useMemo(() => groupDetail?.members.filter(m => m.is_active) ?? [], [groupDetail])
 
   const fmtMonth = (ym: string) => {
     const [y, m] = ym.split("-")
@@ -301,7 +377,7 @@ export default function CompartidosPage() {
             <>
             {/* Leave group — only for linked members */}
             {groupDetail.members.some(m => m.is_active && m.user_id === currentUser?.id) && (
-              <Dialog open={leaveDialog} onOpenChange={setLeaveDialog}>
+              <Dialog open={leaveDialog} onOpenChange={(o) => { setLeaveDialog(o); if (!o) setLeaveError("") }}>
                 <DialogTrigger asChild>
                   <Button variant="outline" className="text-destructive border-destructive/40 hover:bg-destructive/10">
                     <LogOut className="w-4 h-4 mr-2" />
@@ -319,6 +395,11 @@ export default function CompartidosPage() {
                     <p className="text-sm text-muted-foreground">
                       Si no quedan otros miembros activos, el grupo se eliminará automáticamente.
                     </p>
+                    {leaveError && (
+                      <p className="text-sm text-destructive flex items-center gap-1.5">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />{leaveError}
+                      </p>
+                    )}
                   </div>
                   <div className="flex gap-3 mt-2">
                     <Button variant="outline" className="flex-1" onClick={() => setLeaveDialog(false)}>
@@ -332,7 +413,7 @@ export default function CompartidosPage() {
                 </DialogContent>
               </Dialog>
             )}
-            <Dialog open={newMemberDialog} onOpenChange={setNewMemberDialog}>
+            <Dialog open={newMemberDialog} onOpenChange={(o) => { setNewMemberDialog(o); if (!o) setMemberError("") }}>
               <DialogTrigger asChild>
                 <Button variant="outline">
                   <UserPlus className="w-4 h-4 mr-2" />
@@ -348,13 +429,18 @@ export default function CompartidosPage() {
                       onChange={(e) => setMemberForm({ ...memberForm, name: e.target.value })} className="mt-2" required />
                   </div>
                   <div>
-                    <label className="text-sm font-medium text-foreground">Email (opcional)</label>
+                    <label className="text-sm font-medium text-foreground">Email</label>
                     <Input type="email" placeholder="mama@email.com" value={memberForm.email}
-                      onChange={(e) => setMemberForm({ ...memberForm, email: e.target.value })} className="mt-2" />
+                      onChange={(e) => setMemberForm({ ...memberForm, email: e.target.value })} className="mt-2" required />
                     <p className="text-xs text-muted-foreground mt-1">
                       Si el email está registrado en FinSmart, el miembro podrá ver este grupo en su cuenta.
                     </p>
                   </div>
+                  {memberError && (
+                    <p className="text-sm text-destructive flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />{memberError}
+                    </p>
+                  )}
                   <Button type="submit" className="w-full" disabled={isSubmitting}>
                     {isSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                     {isSubmitting ? "Agregando…" : "Agregar"}
@@ -364,7 +450,7 @@ export default function CompartidosPage() {
             </Dialog>
             </>
           )}
-          <Dialog open={newGroupDialog} onOpenChange={setNewGroupDialog}>
+          <Dialog open={newGroupDialog} onOpenChange={(o) => { setNewGroupDialog(o); if (!o) setCreateGroupError("") }}>
             <DialogTrigger asChild>
               <Button variant="outline">
                 <UserPlus className="w-4 h-4 mr-2" />
@@ -402,6 +488,11 @@ export default function CompartidosPage() {
                   <Input placeholder={groupForm.group_type === "fondo" ? "Ej: Gastos del hogar familiar" : "Ej: Gastos del hogar familiar"} value={groupForm.description}
                     onChange={(e) => setGroupForm({ ...groupForm, description: e.target.value })} className="mt-2" />
                 </div>
+                {createGroupError && (
+                  <p className="text-sm text-destructive flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />{createGroupError}
+                  </p>
+                )}
                 <Button type="submit" className="w-full" disabled={isSubmitting}>
                   {isSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                   {isSubmitting ? "Creando…" : "Crear Grupo"}
@@ -524,11 +615,11 @@ export default function CompartidosPage() {
                         {groupDetail.name}
                         {isFondo && <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-foreground/10 text-muted-foreground">Fondo común</span>}
                       </CardTitle>
-                      <CardDescription>{groupDetail.description ?? `${groupDetail.members.length} miembros`}</CardDescription>
+                      <CardDescription>{groupDetail.description ?? `${activeMembers.length} miembros`}</CardDescription>
                     </div>
                     <div className="flex gap-2 flex-wrap">
                       {isFondo && (
-                        <Dialog open={fundDialog} onOpenChange={setFundDialog}>
+                        <Dialog open={fundDialog} onOpenChange={(o) => { setFundDialog(o); if (!o) setFundError("") }}>
                           <DialogTrigger asChild>
                             <Button>
                               <PiggyBank className="w-4 h-4 mr-2" />
@@ -551,8 +642,8 @@ export default function CompartidosPage() {
                               <div className="grid grid-cols-2 gap-3">
                                 <div>
                                   <label className="text-sm font-medium text-foreground">Monto</label>
-                                  <Input type="number" min="1000" step="1000" placeholder="100000" value={fundForm.amount}
-                                    onChange={(e) => setFundForm({ ...fundForm, amount: e.target.value })} className="mt-2" required />
+                                  <CurrencyInput placeholder="100.000" value={fundForm.amount}
+                                    onValueChange={(v) => setFundForm({ ...fundForm, amount: v })} className="mt-2" required />
                                 </div>
                                 <div>
                                   <label className="text-sm font-medium text-foreground">Fecha</label>
@@ -565,6 +656,11 @@ export default function CompartidosPage() {
                                 <Input placeholder="Ej: Cuota de enero" value={fundForm.note}
                                   onChange={(e) => setFundForm({ ...fundForm, note: e.target.value })} className="mt-2" />
                               </div>
+                              {fundError && (
+                                <p className="text-sm text-destructive flex items-center gap-1.5">
+                                  <AlertTriangle className="w-4 h-4 shrink-0" />{fundError}
+                                </p>
+                              )}
                               <Button type="submit" className="w-full" disabled={isContributing}>
                                 {isContributing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                                 {isContributing ? "Registrando…" : "Registrar aporte"}
@@ -573,7 +669,7 @@ export default function CompartidosPage() {
                           </DialogContent>
                         </Dialog>
                       )}
-                    <Dialog open={newExpenseDialog} onOpenChange={setNewExpenseDialog}>
+                    <Dialog open={newExpenseDialog} onOpenChange={(o) => { setNewExpenseDialog(o); if (!o) setExpenseError("") }}>
                       <DialogTrigger asChild>
                         <Button variant={isFondo ? "outline" : "default"}>
                           <Plus className="w-4 h-4 mr-2" />
@@ -591,8 +687,8 @@ export default function CompartidosPage() {
                           <div className="grid grid-cols-2 gap-3">
                             <div>
                               <label className="text-sm font-medium text-foreground">Monto</label>
-                              <Input type="number" min="0.01" step="0.01" placeholder="0.00" value={expenseForm.amount}
-                                onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} className="mt-2" required />
+                              <CurrencyInput placeholder="0" value={expenseForm.amount}
+                                onValueChange={(v) => setExpenseForm({ ...expenseForm, amount: v })} className="mt-2" required />
                             </div>
                             <div>
                               <label className="text-sm font-medium text-foreground">Fecha</label>
@@ -610,10 +706,22 @@ export default function CompartidosPage() {
                                   {Object.keys(expenseIcons).map(c => <option key={c} value={c}>{c}</option>)}
                                 </select>
                               </div>
-                              <div className="rounded-lg bg-secondary/40 p-3 flex items-center gap-2 text-sm text-muted-foreground">
-                                <PiggyBank className="w-4 h-4 flex-shrink-0" />
-                                Este gasto se descontará del fondo común del grupo.
-                              </div>
+                              {(() => {
+                                const amount = parseFloat(expenseForm.amount) || 0
+                                const overLimit = isFondo && fundStatus && amount > fundStatus.balance
+                                return overLimit ? (
+                                  <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-3 flex items-center gap-2 text-sm text-destructive">
+                                    <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                                    Saldo insuficiente: el fondo tiene {formatCOP(fundStatus!.balance)} disponibles.
+                                  </div>
+                                ) : (
+                                  <div className="rounded-lg bg-secondary/40 p-3 flex items-center gap-2 text-sm text-muted-foreground">
+                                    <PiggyBank className="w-4 h-4 flex-shrink-0" />
+                                    Este gasto se descontará del fondo común del grupo.
+                                    {fundStatus && ` Disponible: ${formatCOP(fundStatus.balance)}.`}
+                                  </div>
+                                )
+                              })()}
                             </div>
                           ) : (
                             <>
@@ -648,10 +756,10 @@ export default function CompartidosPage() {
                                         setSplitMode(mode)
                                         if (mode === "equal") setMemberPcts({})
                                         else {
-                                          const eq = Math.floor(100 / groupDetail.members.length)
-                                          const rem = 100 - eq * groupDetail.members.length
+                                          const eq = Math.floor(100 / activeMembers.length)
+                                          const rem = 100 - eq * activeMembers.length
                                           const init: Record<number, number> = {}
-                                          groupDetail.members.forEach((m, i) => { init[m.id] = eq + (i === 0 ? rem : 0) })
+                                          activeMembers.forEach((m, i) => { init[m.id] = eq + (i === 0 ? rem : 0) })
                                           setMemberPcts(init)
                                         }
                                       }}
@@ -665,14 +773,14 @@ export default function CompartidosPage() {
                               {/* Percentage breakdown */}
                               {splitMode === "equal" ? (
                                 <div className="rounded-lg bg-secondary/50 p-3">
-                                  {groupDetail.members.map(m => {
+                                  {activeMembers.map(m => {
                                     const total = parseFloat(expenseForm.amount) || 0
-                                    const share = total / groupDetail.members.length
+                                    const share = total / activeMembers.length
                                     return (
                                       <div key={m.id} className="flex justify-between text-sm py-1">
                                         <span className="text-foreground">{m.name}</span>
                                         <span className="text-muted-foreground">
-                                          {(100 / groupDetail.members.length).toFixed(1)}% · <span className="font-medium text-foreground">{formatCOP(share)}</span>
+                                          {(100 / activeMembers.length).toFixed(1)}% · <span className="font-medium text-foreground">{formatCOP(share)}</span>
                                         </span>
                                       </div>
                                     )
@@ -680,7 +788,7 @@ export default function CompartidosPage() {
                                 </div>
                               ) : (
                                 <div className="rounded-lg border border-input p-3 space-y-2">
-                                  {groupDetail.members.map(m => {
+                                  {activeMembers.map(m => {
                                     const total = parseFloat(expenseForm.amount) || 0
                                     const pct = memberPcts[m.id] ?? 0
                                     const amount = (pct / 100) * total
@@ -712,8 +820,17 @@ export default function CompartidosPage() {
                             </>
                           )}
 
+                          {expenseError && (
+                            <p className="text-sm text-destructive flex items-center gap-1.5">
+                              <AlertTriangle className="w-4 h-4 shrink-0" />{expenseError}
+                            </p>
+                          )}
                           <Button type="submit" className="w-full"
-                            disabled={isSubmitting || (!isFondo && splitMode === "custom" && Math.abs(Object.values(memberPcts).reduce((a,b)=>a+b,0)-100) > 0.5)}>
+                            disabled={
+                              isSubmitting
+                              || (!isFondo && splitMode === "custom" && Math.abs(Object.values(memberPcts).reduce((a,b)=>a+b,0)-100) > 0.5)
+                              || (isFondo && !!fundStatus && (parseFloat(expenseForm.amount) || 0) > fundStatus.balance)
+                            }>
                             {isSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                             {isSubmitting ? "Registrando…" : "Registrar Gasto"}
                           </Button>
@@ -723,14 +840,14 @@ export default function CompartidosPage() {
                     </div>
                   </CardHeader>
                   <CardContent>
-                    <div className="grid grid-cols-2 gap-4 mb-6">
+                    <div className="grid grid-cols-2 gap-3 sm:gap-4 mb-6">
                       <div className="p-4 rounded-lg bg-secondary/50">
                         <p className="text-sm text-muted-foreground">Total gastos</p>
                         <p className="text-2xl font-bold text-foreground">{formatCOP(totalExpenses)}</p>
                       </div>
                       <div className="p-4 rounded-lg bg-secondary/50">
                         <p className="text-sm text-muted-foreground">Miembros</p>
-                        <p className="text-2xl font-bold text-foreground">{groupDetail.members.length}</p>
+                        <p className="text-2xl font-bold text-foreground">{activeMembers.length}</p>
                       </div>
                     </div>
 
@@ -859,6 +976,8 @@ export default function CompartidosPage() {
                       {groupDetail.members.filter(m => m.is_active).map((member) => {
                         const isCreator = member.user_id === groupDetail.creator_id
                         const isLinked = member.user_id != null
+                        const isSelf = member.user_id === currentUser?.id
+                        const canAdminister = currentUser?.id === groupDetail.creator_id
                         return (
                           <div key={member.id} className="flex items-center gap-3 p-3 rounded-lg bg-secondary/50">
                             <div className="w-8 h-8 rounded-full bg-foreground flex items-center justify-center flex-shrink-0">
@@ -881,12 +1000,77 @@ export default function CompartidosPage() {
                               </div>
                               {member.email && <p className="text-xs text-muted-foreground truncate">{member.email}</p>}
                             </div>
+                            {canAdminister && (
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <button type="button" title="Editar nombre"
+                                  onClick={() => { setEditMemberDialog({ id: member.id, name: member.name }); setEditMemberName(member.name); setEditMemberError("") }}
+                                  className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-background transition-colors">
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                                {!isSelf && (
+                                  <button type="button" title="Eliminar del grupo"
+                                    onClick={() => { setRemoveMemberDialog({ id: member.id, name: member.name }); setRemoveMemberError("") }}
+                                    className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-background transition-colors">
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )
                       })}
                     </div>
                   </CardContent>
                 </Card>
+
+                {/* Edit member name */}
+                <Dialog open={!!editMemberDialog} onOpenChange={(o) => { if (!o) setEditMemberDialog(null) }}>
+                  <DialogContent>
+                    <DialogHeader><DialogTitle>Editar nombre</DialogTitle></DialogHeader>
+                    <form onSubmit={handleEditMember} className="space-y-4 mt-4">
+                      <div>
+                        <label className="text-sm font-medium text-foreground">Nombre</label>
+                        <Input value={editMemberName}
+                          onChange={(e) => setEditMemberName(e.target.value)} className="mt-2" required />
+                      </div>
+                      {editMemberError && (
+                        <p className="text-sm text-destructive flex items-center gap-1.5">
+                          <AlertTriangle className="w-4 h-4 shrink-0" />{editMemberError}
+                        </p>
+                      )}
+                      <Button type="submit" className="w-full" disabled={isSavingMember}>
+                        {isSavingMember && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                        {isSavingMember ? "Guardando…" : "Guardar"}
+                      </Button>
+                    </form>
+                  </DialogContent>
+                </Dialog>
+
+                {/* Remove member confirmation */}
+                <Dialog open={!!removeMemberDialog} onOpenChange={(o) => { if (!o) setRemoveMemberDialog(null) }}>
+                  <DialogContent>
+                    <DialogHeader><DialogTitle>¿Eliminar miembro?</DialogTitle></DialogHeader>
+                    <div className="py-3 space-y-3">
+                      <p className="text-sm text-muted-foreground">
+                        Se eliminará a <span className="font-medium text-foreground">{removeMemberDialog?.name}</span> del grupo. Su historial de gastos quedará registrado, pero ya no podrá participar en nuevos gastos.
+                      </p>
+                      {removeMemberError && (
+                        <p className="text-sm text-destructive flex items-center gap-1.5">
+                          <AlertTriangle className="w-4 h-4 shrink-0" />{removeMemberError}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex gap-3 mt-2">
+                      <Button variant="outline" className="flex-1" onClick={() => setRemoveMemberDialog(null)}>
+                        Cancelar
+                      </Button>
+                      <Button variant="destructive" className="flex-1" onClick={handleRemoveMember} disabled={isRemovingMember}>
+                        {isRemovingMember ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
+                        {isRemovingMember ? "Eliminando…" : "Sí, eliminar"}
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
               </div>
             </div>
           )}
@@ -906,7 +1090,7 @@ export default function CompartidosPage() {
               )}
 
               {/* Fund summary */}
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="rounded-xl border border-border p-4 text-center">
                   <p className="text-xs text-muted-foreground mb-1">Total aportado</p>
                   <p className="text-xl font-black text-foreground tabular-nums">
@@ -1023,6 +1207,11 @@ export default function CompartidosPage() {
                     <CardTitle className="text-base">Deudas pendientes</CardTitle>
                   </CardHeader>
                   <CardContent>
+                    {settleError && (
+                      <p className="text-sm text-destructive flex items-center gap-1.5 mb-3">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />{settleError}
+                      </p>
+                    )}
                     {settled ? (
                       <div className="text-center py-8">
                         <CheckCircle2 className="w-10 h-10 text-green-500 mx-auto mb-3" />
@@ -1049,7 +1238,7 @@ export default function CompartidosPage() {
                           return (
                             <div key={i} className="py-4">
                               {/* Main row: debtor | amount | creditor | actions — grid keeps columns aligned across all rows */}
-                              <div className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-x-2 gap-y-2">
+                              <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr_auto] items-center gap-x-2 gap-y-2">
                                 {/* Debtor */}
                                 <div className="flex items-center gap-2 min-w-0">
                                   <div className={`w-9 h-9 rounded-full border flex items-center justify-center flex-shrink-0 ${isMyDebt ? "bg-destructive/15 border-destructive/30" : "bg-destructive/10 border-destructive/20"}`}>
@@ -1067,14 +1256,14 @@ export default function CompartidosPage() {
                                 </div>
 
                                 {/* Amount */}
-                                <div className="flex flex-col items-center px-2">
+                                <div className="flex flex-row sm:flex-col items-center justify-center gap-2 sm:gap-0 px-2">
                                   <p className="text-lg font-black text-foreground tabular-nums">{formatCOP(debt.amount)}</p>
                                   <p className="text-xs text-muted-foreground">a</p>
                                 </div>
 
                                 {/* Creditor */}
-                                <div className="flex items-center gap-2 min-w-0 justify-end">
-                                  <div className="min-w-0 text-right">
+                                <div className="flex items-center gap-2 min-w-0 sm:justify-end">
+                                  <div className="min-w-0 sm:text-right">
                                     <p className="text-sm font-semibold text-foreground truncate">{debt.creditorName}</p>
                                     <p className="text-xs text-muted-foreground">le deben</p>
                                   </div>
@@ -1084,7 +1273,7 @@ export default function CompartidosPage() {
                                 </div>
 
                                 {/* Action buttons */}
-                                <div className="flex items-center gap-1.5 flex-shrink-0 justify-end">
+                                <div className="flex items-center flex-wrap gap-1.5 flex-shrink-0 justify-end">
                                   {contributing.length > 0 && (
                                     <Button variant="ghost" size="sm" className="h-9 text-xs text-muted-foreground px-2"
                                       onClick={() => setExpandedDebt(isExpanded ? null : key)}>
@@ -1158,7 +1347,7 @@ export default function CompartidosPage() {
                 </Card>
 
                 {/* "Take responsibility" confirmation dialog */}
-                <Dialog open={!!responsibilityDialog} onOpenChange={o => { if (!o) setResponsibilityDialog(null) }}>
+                <Dialog open={!!responsibilityDialog} onOpenChange={o => { if (!o) { setResponsibilityDialog(null); setSettleError("") } }}>
                   <DialogContent>
                     <DialogHeader>
                       <DialogTitle className="flex items-center gap-2">
@@ -1177,16 +1366,21 @@ export default function CompartidosPage() {
                         <span className="font-medium text-foreground">{responsibilityDialog?.debtorName}</span> quedará en paz con{" "}
                         <span className="font-medium text-foreground">{responsibilityDialog?.creditorName}</span> y la deuda se marcará saldada.
                       </p>
+                      {settleError && (
+                        <p className="text-sm text-destructive flex items-center gap-1.5">
+                          <AlertTriangle className="w-4 h-4 shrink-0" />{settleError}
+                        </p>
+                      )}
                     </div>
                     <div className="flex gap-3 mt-2">
                       <Button variant="outline" className="flex-1" onClick={() => setResponsibilityDialog(null)}>
                         Cancelar
                       </Button>
                       <Button className="flex-1" disabled={settlingKey !== null}
-                        onClick={() => {
+                        onClick={async () => {
                           if (!responsibilityDialog) return
-                          handleSettle(responsibilityDialog.debtorId, responsibilityDialog.creditorId)
-                          setResponsibilityDialog(null)
+                          const ok = await handleSettle(responsibilityDialog.debtorId, responsibilityDialog.creditorId)
+                          if (ok) setResponsibilityDialog(null)
                         }}>
                         {settlingKey ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
                         Sí, pago yo
@@ -1196,7 +1390,7 @@ export default function CompartidosPage() {
                 </Dialog>
 
                 {/* Payment selection dialog — choose which expenses to pay */}
-                <Dialog open={!!paymentDialog} onOpenChange={o => { if (!o) { setPaymentDialog(null); setSelectedSplitIds(new Set()) } }}>
+                <Dialog open={!!paymentDialog} onOpenChange={o => { if (!o) { setPaymentDialog(null); setSelectedSplitIds(new Set()); setSettleError("") } }}>
                   <DialogContent>
                     <DialogHeader>
                       <DialogTitle>¿Qué deudas quieres pagar?</DialogTitle>
@@ -1242,8 +1436,13 @@ export default function CompartidosPage() {
                         </span>
                       </div>
                     )}
+                    {settleError && (
+                      <p className="text-sm text-destructive flex items-center gap-1.5">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />{settleError}
+                      </p>
+                    )}
                     <div className="flex gap-3 mt-1">
-                      <Button variant="outline" className="flex-1" onClick={() => { setPaymentDialog(null); setSelectedSplitIds(new Set()) }}>
+                      <Button variant="outline" className="flex-1" onClick={() => { setPaymentDialog(null); setSelectedSplitIds(new Set()); setSettleError("") }}>
                         Cancelar
                       </Button>
                       <Button className="flex-1" disabled={selectedSplitIds.size === 0 || isSettlingPartial}
