@@ -1,13 +1,13 @@
 #!/bin/sh
 # Arranque del backend: Xvfb (pantalla virtual) + semilla + uvicorn.
 #
-# Chrome real (no headless) sobre esta pantalla es lo que hace que reCAPTCHA
-# v3 no rechace las consultas de Movistar (headless puro se rechazaba con un
-# 500 genérico). Xvfb corre supervisado en un bucle propio: se cayó alguna vez
-# sin que nada lo notara, dejando un socket viejo en /tmp/.X11-unix que
-# engañaba el chequeo de "¿ya está listo?" y hacía fallar el lanzamiento del
-# navegador con "Missing X server or $DISPLAY" horas después. Si Xvfb muere,
-# este bucle lo vuelve a levantar solo.
+# Chrome real (no headless) sobre esta pantalla mejora el puntaje de los
+# reCAPTCHA v2/v3 que resuelven los scrapers (EMCALI, EPM, Codensa, Claro).
+# Xvfb corre supervisado en un bucle propio: se cayó alguna vez sin que nada
+# lo notara, dejando un socket viejo en /tmp/.X11-unix que engañaba el
+# chequeo de "¿ya está listo?" y hacía fallar el lanzamiento del navegador
+# con "Missing X server or $DISPLAY" horas después. Si Xvfb muere, este
+# bucle lo vuelve a levantar solo.
 (
   while true; do
     rm -f /tmp/.X11-unix/X99 /tmp/.X99-lock

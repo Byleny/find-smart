@@ -40,6 +40,7 @@ class UserUpdate(BaseModel):
     phone: Optional[str] = None
     identification_type: Optional[str] = None
     identification_number: Optional[str] = None
+    address: Optional[str] = None
 
 
 class UserResponse(UserBase):
@@ -49,6 +50,7 @@ class UserResponse(UserBase):
     phone: Optional[str] = None
     identification_type: Optional[str] = "CC"
     identification_number: Optional[str] = None
+    address: Optional[str] = None
     created_at: Optional[datetime] = None
 
 
@@ -352,6 +354,7 @@ class RecurringServiceCreate(RecurringServiceBase):
     payer_id_number: Optional[str] = None
     payer_phone: Optional[str] = None
     payer_email: Optional[str] = None
+    payer_address: Optional[str] = None
     payment_identifier: Optional[str] = None
 
 
@@ -368,6 +371,7 @@ class RecurringServiceUpdate(BaseModel):
     payer_id_number: Optional[str] = None
     payer_phone: Optional[str] = None
     payer_email: Optional[str] = None
+    payer_address: Optional[str] = None
     payment_identifier: Optional[str] = None
 
 
@@ -385,6 +389,7 @@ class RecurringServiceResponse(RecurringServiceBase):
     payer_id_number: Optional[str] = None
     payer_phone: Optional[str] = None
     payer_email: Optional[str] = None
+    payer_address: Optional[str] = None
     payment_identifier: Optional[str] = None
 
 
@@ -492,34 +497,44 @@ class PSEInitResponse(BaseModel):
 # tiempo (frágil sobre túneles/proxies), el backend arranca el trabajo y el
 # frontend sondea el estado — mismo patrón que EmcaliCaptchaResponse.
 
-class MovistarPollStart(BaseModel):
+class PSEPayRequest(BaseModel):
+    session_id: str
+    bank_code: str
+    guardar_datos: bool = False
+
+
+# ── PSE Payment (Claro): mismo patrón de sondeo, con un paso extra de OTP ────
+# A diferencia de Movistar (bloqueado por Turnstile) y GDO (sin verificación
+# por SMS), Claro pide un código de 4 dígitos enviado por SMS entre el primer
+# reCAPTCHA y el segundo — de ahí el estado intermedio "otp_requerido" y el
+# endpoint separado para reenviarlo.
+
+class ClaroPollStart(BaseModel):
     estado: str        # siempre "consultando" al arrancar
     poll_id: str
 
 
-class MovistarPollRequest(BaseModel):
+class ClaroPollRequest(BaseModel):
     poll_id: str
 
 
-class MovistarInitStatus(BaseModel):
-    estado: str        # "consultando" | "listo"
+class ClaroInitStatus(BaseModel):
+    estado: str        # "consultando" | "otp_requerido" | "listo"
     session_id: Optional[str] = None
     banks: List[PSEBank] = []
     amount: Optional[float] = None
     due_date: Optional[str] = None
     reference: Optional[str] = None
-    is_up_to_date: Optional[bool] = None
 
 
-class MovistarPayStatus(BaseModel):
+class ClaroOtpRequest(BaseModel):
+    session_id: str
+    codigo: str
+
+
+class ClaroPayStatus(BaseModel):
     estado: str        # "consultando" | "listo"
     pse_url: Optional[str] = None
-
-
-class PSEPayRequest(BaseModel):
-    session_id: str
-    bank_code: str
-    guardar_datos: bool = False
 
 
 class PSEPayResponse(BaseModel):

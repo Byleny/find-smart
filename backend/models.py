@@ -18,6 +18,7 @@ class User(Base):
     phone = Column(String, nullable=True)
     identification_type = Column(String, nullable=True, default="CC")
     identification_number = Column(String, nullable=True)
+    address = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     transactions = relationship("Transaction", back_populates="user")
@@ -195,6 +196,9 @@ class RecurringService(Base):
     payer_id_number = Column(String, nullable=True)
     payer_phone = Column(String, nullable=True)
     payer_email = Column(String, nullable=True)
+    # Requerido por el formulario de datos personales de PSE en ePayco
+    # (Movistar); no lo piden GDO ni EMCALI.
+    payer_address = Column(String, nullable=True)
     # Movistar: cómo se identifica el pago — '1' número de línea, '2' referencia de pago
     payment_identifier = Column(String, nullable=True)
 

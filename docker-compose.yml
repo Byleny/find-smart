@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app             
+      - ./backend:/app
     environment:
       SECRET_KEY: finsmart-dev-secret-key-cambiar-en-produccion-32chars
       ALGORITHM: HS256
@@ -23,6 +23,10 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-FinSmart}
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:3000}
+      # Resuelve el reCAPTCHA v2 del portal de pago PSE de Claro (ver
+      # services/claro_pse.py). Vacio en dev: ese flujo especifico se
+      # bloquea sin romper el resto de la plataforma.
+      TWOCAPTCHA_API_KEY: ${TWOCAPTCHA_API_KEY:-}
     command: ["sh", "start.sh", "--reload"]
     restart: unless-stopped
 

@@ -6,6 +6,7 @@ export interface User {
   phone?: string
   identification_type?: string
   identification_number?: string
+  address?: string
   created_at: string
 }
 
@@ -14,6 +15,7 @@ export interface UserProfileUpdate {
   phone?: string
   identification_type?: string
   identification_number?: string
+  address?: string
 }
 
 export interface AuthResponse {
@@ -362,42 +364,8 @@ export interface PSEPayRequest {
   guardar_datos?: boolean
 }
 
-// Movistar PSE: arranca en segundo plano, el frontend sondea el resultado
-// (el flujo real puede tardar más de un minuto entre reintentos).
-export interface MovistarPollStart {
-  estado: "consultando"
-  poll_id: string
-}
-
-export interface MovistarInitStatus {
-  estado: "consultando" | "listo"
-  session_id?: string
-  banks: PSEBank[]
-  amount?: number
-  due_date?: string
-  reference?: string
-  is_up_to_date?: boolean
-}
-
-export interface MovistarPayStatus {
-  estado: "consultando" | "listo"
-  pse_url?: string
-}
-
 export interface PSEPayResponse {
   pse_url: string
-}
-
-// EMCALI: reCAPTCHA resuelto por el usuario
-export type EmcaliEstado = "desafio" | "consultando" | "listo"
-
-export interface EmcaliCaptchaResponse {
-  estado: EmcaliEstado
-  session_id?: string
-  imagen?: string        // PNG en base64 del desafío
-  ancho?: number
-  alto?: number
-  resultado?: InvoiceResult
 }
 
 // trends

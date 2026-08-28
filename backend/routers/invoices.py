@@ -12,7 +12,7 @@ from schemas import (
     RecurringServiceCreate, RecurringServiceUpdate, RecurringServiceResponse,
     InvoiceResult, PSEInitResponse, PSEBank, PSEPayRequest, PSEPayResponse,
     EmcaliCaptchaResponse, EmcaliClickRequest, EmcaliSessionRequest,
-    MovistarPollStart, MovistarInitStatus, MovistarPayStatus, MovistarPollRequest,
+    ClaroPollStart, ClaroPollRequest, ClaroInitStatus, ClaroOtpRequest, ClaroPayStatus,
 )
 from security import oauth2_scheme, SECRET_KEY, ALGORITHM
 from jose import JWTError, jwt
@@ -26,6 +26,16 @@ router = APIRouter()
 
 # Proveedores con scraper real (no demo)
 REAL_SCRAPER_IDS = {p["id"] for p in PROVIDERS_LIST if p.get("real_scraper")}
+
+# Proveedores que ya ofrecen un enlace de pago PSE real (redirección al
+# banco), en lugar de solo un QR informativo con los datos de la factura.
+# Movistar quedó fuera: su automatización de pago (services/movistar_pse.py)
+# dependía de un portal protegido con Cloudflare Turnstile, que bloquea la
+# instrumentación de Playwright/patchright sin importar quién interactúe con
+# ella (se comprobó incluso con clics genuinos de una persona real vía
+# escritorio remoto) — no hay enlace PSE real que ofrecer, así que Movistar
+# vuelve al mismo caso que EMCALI/EPM/Codensa: solo el QR informativo.
+_PSE_PROVIDERS = {"gdo"}
 
 
 def _error_portal(mensaje_publico: str, exc: Exception, status_code: int = 502) -> HTTPException:
@@ -193,8 +203,11 @@ async def fetch_contract_invoice(
     except Exception as exc:
         raise _error_portal(f"Error al consultar el portal de {svc.provider.upper()}.", exc)
 
-    # No generar QR si el portal bloqueó o el cliente está al día (monto $0)
-    if result.portal_blocked or result.is_up_to_date:
+    # GDO ya ofrece un enlace de pago PSE real (botón "Pagar con PSE" en la
+    # tarjeta del contrato); el QR ahí es redundante. Para el resto (EMCALI,
+    # EPM, Codensa/Enel, Movistar), que no tienen un flujo PSE propio, el QR
+    # sigue siendo la única ayuda de pago.
+    if result.portal_blocked or result.is_up_to_date or svc.provider in _PSE_PROVIDERS:
         qr_b64 = ""
     else:
         qr_b64 = await run_in_threadpool(
@@ -251,10 +264,13 @@ async def lookup_invoice(
         raise _error_portal("Error al consultar el portal.", exc)
 
     service_name = payload.service_name or payload.provider.upper()
-    qr_b64 = await run_in_threadpool(
-        generate_payment_qr,
-        service_name, payload.provider, result.reference, result.amount, str(result.due_date),
-    )
+    if payload.provider in _PSE_PROVIDERS:
+        qr_b64 = ""
+    else:
+        qr_b64 = await run_in_threadpool(
+            generate_payment_qr,
+            service_name, payload.provider, result.reference, result.amount, str(result.due_date),
+        )
 
     return InvoiceLookupResult(
         amount=result.amount,
@@ -325,15 +341,12 @@ async def pse_init(
     if data["is_up_to_date"]:
         svc.last_fetched_amount = None
     else:
-        qr_b64 = await run_in_threadpool(
-            generate_payment_qr,
-            svc.name, svc.provider, data["reference"], data["amount"], data["due_date"],
-        )
+        # Sin QR: este flujo ya termina en pse-pay con un enlace real al banco.
         db.add(Invoice(
             service_id=svc.id,
             amount=data["amount"],
             due_date=date.fromisoformat(data["due_date"]),
-            qr_data=qr_b64,
+            qr_data="",
         ))
         svc.last_fetched_amount = data["amount"]
     svc.last_fetched_at = datetime.utcnow()
@@ -383,187 +396,6 @@ async def pse_pay(
         raise _error_portal("Error al obtener URL PSE.", exc)
 
     return PSEPayResponse(pse_url=pse_url)
-
-
-# ── PSE Payment (Movistar / Movistar Móvil) ───────────────────────────────────
-
-_MOVISTAR_TAB = {"movistar": "Internet", "movistar_movil": "Pospago"}
-
-
-def _movistar_user_data(svc: RecurringService, current_user: User) -> dict:
-    return {
-        "full_name": svc.payer_name or current_user.full_name,
-        "email": svc.payer_email or current_user.email,
-        "phone": svc.payer_phone or current_user.phone or "",
-        "identification_type": svc.payer_id_type or current_user.identification_type or "CC",
-        "identification_number": svc.payer_id_number or current_user.identification_number or "",
-    }
-
-
-@router.post("/contracts/{contract_id}/movistar-pse-init", response_model=MovistarPollStart)
-async def movistar_pse_init(
-    contract_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    """
-    Arranca en segundo plano el pago PSE de Movistar (consulta la factura,
-    clic en "Pagar", modal de métodos de pago, formulario Cobre) y devuelve
-    de inmediato un poll_id. El resultado real se obtiene sondeando
-    /movistar-pse-init-status: el flujo completo (con reintentos si el
-    portal rechaza la consulta) puede tardar más de un minuto, y sostener
-    eso en una sola conexión HTTP resultó frágil sobre redes lentas/túneles
-    — se cortaba antes de que el backend terminara. Ver
-    services/movistar_pse.py para el detalle del flujo.
-    """
-    svc = db.query(RecurringService).filter(
-        RecurringService.id == contract_id,
-        RecurringService.user_id == current_user.id,
-        RecurringService.is_active == True,
-    ).first()
-    if not svc:
-        raise HTTPException(status_code=404, detail="Contrato no encontrado.")
-    if svc.provider not in _MOVISTAR_TAB:
-        raise HTTPException(
-            status_code=400,
-            detail="Solo contratos de Movistar o Movistar Móvil soportan este flujo de pago.",
-        )
-
-    tipo = svc.payment_identifier or "1"
-    user_data = _movistar_user_data(svc, current_user)
-
-    from services import movistar_pse
-    try:
-        data = await run_in_threadpool(
-            movistar_pse.iniciar, svc.account_reference, tipo, user_data, _MOVISTAR_TAB[svc.provider],
-        )
-    except Exception as exc:
-        raise _error_portal("Error al iniciar el pago de Movistar.", exc)
-
-    return MovistarPollStart(**data)
-
-
-@router.post("/contracts/{contract_id}/movistar-pse-init-status", response_model=MovistarInitStatus)
-async def movistar_pse_init_status(
-    contract_id: int,
-    payload: MovistarPollRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    """Sondea el resultado de movistar-pse-init. Ver esa ruta para el motivo."""
-    svc = db.query(RecurringService).filter(
-        RecurringService.id == contract_id,
-        RecurringService.user_id == current_user.id,
-    ).first()
-    if not svc:
-        raise HTTPException(status_code=404, detail="Contrato no encontrado.")
-
-    from services import movistar_pse
-    try:
-        data = await run_in_threadpool(movistar_pse.estado_iniciar, payload.poll_id)
-    except KeyError:
-        raise HTTPException(status_code=400, detail="Sesión de consulta expirada. Inicia el proceso nuevamente.")
-    except Exception as exc:
-        raise _error_portal("Error al consultar la factura de Movistar.", exc)
-
-    if data.get("estado") == "consultando":
-        return MovistarInitStatus(estado="consultando")
-
-    if data.get("estado") == "bloqueado":
-        raise HTTPException(status_code=502, detail=data["resultado"]["blocked_reason"])
-
-    resultado = data.get("resultado") or {}
-
-    # "listo_sin_pago" también cubre el caso en que el portal rechazó la
-    # consulta (ej. reCAPTCHA) — eso NO es "sin deuda", es un fallo real y hay
-    # que devolverlo como error en vez de seguir con un monto de $0.
-    if resultado.get("portal_blocked"):
-        raise HTTPException(
-            status_code=502,
-            detail=resultado.get("blocked_reason") or "Movistar no pudo entregar la factura ahora mismo.",
-        )
-
-    amount = float(resultado.get("amount", data.get("amount", 0)) or 0)
-    due_date = resultado.get("due_date") or data.get("due_date")
-    reference = resultado.get("reference") or data.get("reference") or f"MOVISTAR-{svc.account_reference}"
-    is_up_to_date = bool(resultado.get("is_up_to_date", data.get("is_up_to_date", False)))
-
-    if not is_up_to_date:
-        qr_b64 = await run_in_threadpool(
-            generate_payment_qr, svc.name, svc.provider, reference, amount, due_date,
-        )
-        db.add(Invoice(
-            service_id=svc.id, amount=amount,
-            due_date=date.fromisoformat(due_date), qr_data=qr_b64,
-        ))
-        svc.last_fetched_amount = amount
-    else:
-        svc.last_fetched_amount = None
-    svc.last_fetched_at = datetime.utcnow()
-    db.commit()
-
-    return MovistarInitStatus(
-        estado="listo",
-        session_id=data.get("session_id", ""),
-        banks=[PSEBank(**b) for b in data.get("banks", [])],
-        amount=amount, due_date=due_date, reference=reference,
-        is_up_to_date=is_up_to_date,
-    )
-
-
-@router.post("/contracts/{contract_id}/movistar-pse-pay", response_model=MovistarPollStart)
-async def movistar_pse_pay(
-    contract_id: int,
-    payload: PSEPayRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(_get_current_user),
-):
-    """
-    Arranca en segundo plano el llenado del formulario de datos personales +
-    entidad financiera en Movistar/Cobre, y devuelve un poll_id. El resultado
-    (la URL de redirección al banco real) se obtiene sondeando
-    /movistar-pse-pay-status.
-    """
-    svc = db.query(RecurringService).filter(
-        RecurringService.id == contract_id,
-        RecurringService.user_id == current_user.id,
-    ).first()
-    if not svc:
-        raise HTTPException(status_code=404, detail="Contrato no encontrado.")
-
-    user_data = _movistar_user_data(svc, current_user)
-
-    from services import movistar_pse
-    try:
-        poll_id = await run_in_threadpool(
-            movistar_pse.pagar, payload.session_id, payload.bank_code, user_data, payload.guardar_datos,
-        )
-    except KeyError:
-        raise HTTPException(status_code=400, detail="Sesión PSE expirada. Inicia el proceso nuevamente.")
-    except Exception as exc:
-        raise _error_portal("Error al procesar el pago de Movistar.", exc)
-
-    return MovistarPollStart(estado="consultando", poll_id=poll_id)
-
-
-@router.post("/contracts/{contract_id}/movistar-pse-pay-status", response_model=MovistarPayStatus)
-async def movistar_pse_pay_status(
-    contract_id: int,
-    payload: MovistarPollRequest,
-    current_user: User = Depends(_get_current_user),
-):
-    """Sondea el resultado de movistar-pse-pay. Ver esa ruta para el motivo."""
-    from services import movistar_pse
-    try:
-        data = await run_in_threadpool(movistar_pse.estado_pagar, payload.poll_id)
-    except KeyError:
-        raise HTTPException(status_code=400, detail="Sesión de pago expirada. Inicia el proceso nuevamente.")
-    except Exception as exc:
-        raise _error_portal("Error al procesar el pago de Movistar.", exc)
-
-    if data.get("estado") == "consultando":
-        return MovistarPayStatus(estado="consultando")
-    return MovistarPayStatus(estado="listo", pse_url=data.get("redirect_url"))
 
 
 # ── EMCALI: consulta con reCAPTCHA resuelto por el usuario ────────────────────
@@ -715,3 +547,195 @@ async def emcali_cancel(
     _emcali_contract(db, contract_id, current_user)
     from services import emcali_captcha
     await run_in_threadpool(emcali_captcha.cerrar, payload.session_id)
+
+
+# ── PSE Payment (Claro) ───────────────────────────────────────────────────────
+# Mismo patrón de sondeo que Movistar, con un paso extra: Claro pide un
+# código de verificación por SMS entre el primer reCAPTCHA y el segundo, así
+# que hay un estado intermedio "otp_requerido" que el frontend muestra como
+# un campo de código antes de llegar a la lista de bancos.
+
+_CLARO_TIPO_SERVICIO = {"claro": "Postpago", "claro_hogar": "Hogar y Multiplay"}
+
+
+def _claro_contract(db: Session, contract_id: int, user: User) -> RecurringService:
+    svc = db.query(RecurringService).filter(
+        RecurringService.id == contract_id,
+        RecurringService.user_id == user.id,
+        RecurringService.is_active == True,
+    ).first()
+    if not svc:
+        raise HTTPException(status_code=404, detail="Contrato no encontrado.")
+    if svc.provider not in _CLARO_TIPO_SERVICIO:
+        raise HTTPException(status_code=400, detail="Este contrato no es de Claro.")
+    return svc
+
+
+def _claro_user_data(current_user: User) -> dict:
+    return {
+        "full_name": current_user.full_name,
+        "email": current_user.email,
+        "identification_type": current_user.identification_type or "CC",
+        "identification_number": current_user.identification_number or "",
+    }
+
+
+@router.post("/contracts/{contract_id}/claro-pse-init", response_model=ClaroPollStart)
+async def claro_pse_init(
+    contract_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    svc = _claro_contract(db, contract_id, current_user)
+    from services import claro_pse
+    tipo_servicio = _CLARO_TIPO_SERVICIO[svc.provider]
+    data = await run_in_threadpool(claro_pse.iniciar, svc.account_reference, tipo_servicio)
+    return ClaroPollStart(**data)
+
+
+@router.post("/contracts/{contract_id}/claro-pse-init-status", response_model=ClaroInitStatus)
+async def claro_pse_init_status(
+    contract_id: int,
+    payload: ClaroPollRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    svc = _claro_contract(db, contract_id, current_user)
+    from services import claro_pse
+    try:
+        data = await run_in_threadpool(claro_pse.estado_iniciar, payload.poll_id)
+    except KeyError:
+        raise HTTPException(status_code=400, detail="Sesión de consulta expirada. Inicia el proceso nuevamente.")
+    except Exception as exc:
+        raise _error_portal("Error al consultar la factura de Claro.", exc)
+
+    estado = data.get("estado")
+    if estado == "consultando":
+        return ClaroInitStatus(estado="consultando")
+    if estado == "bloqueado":
+        raise HTTPException(
+            status_code=502,
+            detail=(data.get("resultado") or {}).get("blocked_reason") or "Claro no pudo entregar la factura ahora mismo.",
+        )
+    if estado == "otp_requerido":
+        return ClaroInitStatus(estado="otp_requerido", session_id=data["session_id"])
+
+    amount = float(data.get("amount") or 0)
+    due_date = data.get("due_date") or str(date.today() + timedelta(days=15))
+    reference = data.get("reference") or f"CLARO-{svc.account_reference}"
+    db.add(Invoice(service_id=svc.id, amount=amount, due_date=date.today() + timedelta(days=15), qr_data=""))
+    svc.last_fetched_amount = amount
+    svc.last_fetched_at = datetime.utcnow()
+    db.commit()
+
+    return ClaroInitStatus(
+        estado="listo",
+        session_id=data.get("session_id", ""),
+        banks=[PSEBank(**b) for b in data.get("banks", [])],
+        amount=amount, due_date=due_date, reference=reference,
+    )
+
+
+@router.post("/contracts/{contract_id}/claro-pse-otp", response_model=ClaroPollStart)
+async def claro_pse_otp(
+    contract_id: int,
+    payload: ClaroOtpRequest,
+    current_user: User = Depends(_get_current_user),
+    db: Session = Depends(get_db),
+):
+    _claro_contract(db, contract_id, current_user)
+    from services import claro_pse
+    try:
+        data = await run_in_threadpool(claro_pse.enviar_otp, payload.session_id, payload.codigo)
+    except KeyError:
+        raise HTTPException(status_code=400, detail="Sesión de Claro expirada. Inicia el proceso nuevamente.")
+    except Exception as exc:
+        raise _error_portal("Error al enviar el código de verificación.", exc)
+    return ClaroPollStart(**data)
+
+
+@router.post("/contracts/{contract_id}/claro-pse-otp-status", response_model=ClaroInitStatus)
+async def claro_pse_otp_status(
+    contract_id: int,
+    payload: ClaroPollRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    svc = _claro_contract(db, contract_id, current_user)
+    from services import claro_pse
+    try:
+        data = await run_in_threadpool(claro_pse.estado_otp, payload.poll_id)
+    except KeyError:
+        raise HTTPException(status_code=400, detail="Sesión de verificación expirada. Inicia el proceso nuevamente.")
+    except Exception as exc:
+        raise _error_portal("Error al verificar el código de Claro.", exc)
+
+    estado = data.get("estado")
+    if estado == "consultando":
+        return ClaroInitStatus(estado="consultando")
+    if estado == "bloqueado":
+        raise HTTPException(
+            status_code=502,
+            detail=(data.get("resultado") or {}).get("blocked_reason") or "Claro no pudo entregar la factura ahora mismo.",
+        )
+    if estado == "otp_requerido":
+        # La página de confirmación caducó (el 2do reCAPTCHA tardó más de lo
+        # que Claro tolera) y el backend ya volvió a pedir un código nuevo
+        # automáticamente — dispara un SMS nuevo, hay que pedirle al usuario
+        # que lo ingrese otra vez con el mismo session_id.
+        return ClaroInitStatus(estado="otp_requerido", session_id=data["session_id"])
+
+    amount = float(data.get("amount") or 0)
+    due_date = data.get("due_date") or str(date.today() + timedelta(days=15))
+    reference = data.get("reference") or f"CLARO-{svc.account_reference}"
+    db.add(Invoice(service_id=svc.id, amount=amount, due_date=date.today() + timedelta(days=15), qr_data=""))
+    svc.last_fetched_amount = amount
+    svc.last_fetched_at = datetime.utcnow()
+    db.commit()
+
+    return ClaroInitStatus(
+        estado="listo",
+        session_id=data.get("session_id", ""),
+        banks=[PSEBank(**b) for b in data.get("banks", [])],
+        amount=amount, due_date=due_date, reference=reference,
+    )
+
+
+@router.post("/contracts/{contract_id}/claro-pse-pay", response_model=ClaroPollStart)
+async def claro_pse_pay(
+    contract_id: int,
+    payload: PSEPayRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    _claro_contract(db, contract_id, current_user)
+    user_data = _claro_user_data(current_user)
+    from services import claro_pse
+    try:
+        poll_id = await run_in_threadpool(claro_pse.pagar, payload.session_id, payload.bank_code, user_data)
+    except KeyError:
+        raise HTTPException(status_code=400, detail="Sesión PSE de Claro expirada. Inicia el proceso nuevamente.")
+    except Exception as exc:
+        raise _error_portal("Error al procesar el pago de Claro.", exc)
+    return ClaroPollStart(estado="consultando", poll_id=poll_id)
+
+
+@router.post("/contracts/{contract_id}/claro-pse-pay-status", response_model=ClaroPayStatus)
+async def claro_pse_pay_status(
+    contract_id: int,
+    payload: ClaroPollRequest,
+    current_user: User = Depends(_get_current_user),
+    db: Session = Depends(get_db),
+):
+    _claro_contract(db, contract_id, current_user)
+    from services import claro_pse
+    try:
+        data = await run_in_threadpool(claro_pse.estado_pagar, payload.poll_id)
+    except KeyError:
+        raise HTTPException(status_code=400, detail="Sesión de pago expirada. Inicia el proceso nuevamente.")
+    except Exception as exc:
+        raise _error_portal("Error al procesar el pago de Claro.", exc)
+
+    if data.get("estado") == "consultando":
+        return ClaroPayStatus(estado="consultando")
+    return ClaroPayStatus(estado="listo", pse_url=data.get("redirect_url"))

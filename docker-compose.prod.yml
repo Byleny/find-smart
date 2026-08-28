@@ -24,6 +24,7 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-FinSmart}
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
+      TWOCAPTCHA_API_KEY: ${TWOCAPTCHA_API_KEY:-}
     command: ["sh", "start.sh"]
     restart: unless-stopped
 

@@ -410,6 +410,20 @@ async def _abrir(ses: _Sesion) -> dict:
             "de EMCALI. Es posible que hayan cambiado el formulario."
         )
 
+    # Se probó resolver este reCAPTCHA con 2Captcha, igual que en Claro: llenar
+    # el campo oficial `g-recaptcha-response` con un token real, sin tocar el
+    # JS del widget (ver services/twocaptcha.py). El botón "Paga tu factura"
+    # sí quedó habilitado y el clic funcionó, pero la app de Angular nunca
+    # llamó a /api/open/infocomercial — a diferencia del formulario plano de
+    # Claro, esta integración de Angular solo confía en su propio estado
+    # interno (el que actualiza el callback `resolved()` cuando el widget
+    # completa su flujo real), no en releer el campo del DOM al enviar. La
+    # única forma de que sí confíe en el token sería invocar ese callback
+    # directamente — la misma técnica de "enganchar el JS del widget" que ya
+    # quedó descartada con Cloudflare Turnstile — así que se mantiene el flujo
+    # original: clic automático del checkbox y, si Google exige el desafío de
+    # imágenes, retransmitírselo al usuario.
+
     # Intento automático del checkbox: a veces Google lo da por bueno sin desafío
     try:
         await page.wait_for_selector('iframe[title="reCAPTCHA"]', timeout=15_000)

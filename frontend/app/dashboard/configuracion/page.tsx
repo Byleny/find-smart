@@ -25,6 +25,7 @@ export default function ConfiguracionPage() {
     phone: "",
     identification_type: "CC",
     identification_number: "",
+    address: "",
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -42,6 +43,7 @@ export default function ConfiguracionPage() {
         phone:                 authUser.phone ?? "",
         identification_type:   authUser.identification_type ?? "CC",
         identification_number: authUser.identification_number ?? "",
+        address:               authUser.address ?? "",
       })
     }
   }, [authUser])
@@ -178,6 +180,19 @@ export default function ConfiguracionPage() {
               placeholder="Ej: 3126266746"
               type="tel"
             />
+          </div>
+          <div className="mt-4">
+            <label className="text-sm font-medium text-gray-700 block mb-1">
+              Dirección
+            </label>
+            <Input
+              value={form.address}
+              onChange={e => set("address", e.target.value)}
+              placeholder="Ej: Calle 1 Bis #69 - 19"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Algunos proveedores de pago PSE pueden pedirla para completar el pago.
+            </p>
           </div>
         </CardContent>
       </Card>
