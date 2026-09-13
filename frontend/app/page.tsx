@@ -425,7 +425,7 @@ export default function LandingPage() {
                   body="Escribe la descripción del gasto y el modelo de Regresión Logística — entrenado solo con tus transacciones — sugiere la categoría con confianza. Con 10 registros ya funciona; con 200, alcanza el 90,9 % de precisión." />
                 <FeatureRow num="02" delay={130}
                   title="Consulta de facturas"
-                  body="Registra tu contrato de GDO (Gases de Occidente) o EMCALI. FinSmart consulta el portal automáticamente y te muestra el monto, la fecha de vencimiento y el enlace de pago Nequi o PSE." />
+                  body="Registra tu contrato de GDO (Gases de Occidente). FinSmart consulta el portal automáticamente y te muestra el monto, la fecha de vencimiento y el enlace de pago PSE. Con otros proveedores (EMCALI, Claro, Movistar, Tigo, Celsia) te lleva directo a su portal oficial para pagar." />
                 <FeatureRow num="03" delay={200}
                   title="Alertas de gasto inusual"
                   body="Isolation Forest analiza cada nuevo gasto y te avisa si rompe tu patrón histórico — antes de que te sorprenda el extracto bancario. Cuantos más datos tienes, más precisa la alerta." />

@@ -1,6 +1,6 @@
 # FinSmart
 
-Aplicación de finanzas personales desarrollada como proyecto de tesis. Permite registrar ingresos y gastos, definir presupuestos y metas de ahorro, gestionar gastos compartidos con otros usuarios, automatizar el pago de servicios recurrentes (Claro, EMCALI, Movistar) y aplica Machine Learning para ayudar al usuario a entender sus finanzas.
+Aplicación de finanzas personales desarrollada como proyecto de tesis. Permite registrar ingresos y gastos, definir presupuestos y metas de ahorro, gestionar gastos compartidos con otros usuarios, consultar y pagar automáticamente por PSE las facturas de GDO (Gases de Occidente), hacer seguimiento a otros servicios recurrentes (EMCALI, Claro, Movistar, Tigo, Celsia) enlazando directo a sus portales oficiales de pago, y aplica Machine Learning para ayudar al usuario a entender sus finanzas.
 
 ## Funcionalidades principales
 
@@ -9,8 +9,7 @@ Aplicación de finanzas personales desarrollada como proyecto de tesis. Permite 
 - **Presupuestos** por categoría con alertas.
 - **Metas de ahorro** con seguimiento de aportes.
 - **Gastos compartidos** entre grupos de usuarios (división y liquidación de saldos).
-- **Servicios recurrentes**: pago automatizado de facturas (Claro PSE, EMCALI, Movistar) mediante scraping/RPA.
-- **Facturas**: lectura de facturas (QR/escaneo).
+- **Servicios recurrentes y facturas**: registro de contratos de servicios (EMCALI, Claro, Movistar, Tigo, Celsia, GDO). Para GDO, consulta automática del monto y la fecha de vencimiento mediante scraping/RPA del portal, con generación del enlace de pago PSE; para el resto de proveedores se lleva al usuario directo a su portal oficial para consultar y pagar (la automatización se abandonó para esos portales por bloqueos de reCAPTCHA/Cloudflare).
 - **Notificaciones** por correo (invitaciones a grupos, confirmación de pago, alertas de presupuesto).
 - **Inteligencia Artificial / ML** (`backend/services/ai_service.py`, `backend/services/ml_service.py`):
   - Regresión Logística para sugerir categorías de gastos.
@@ -79,7 +78,9 @@ npm run dev
 
 ### Datos de demostración
 
-Para poblar la base de datos con un usuario y transacciones de ejemplo (pensado para poner en evidencia el comportamiento de los tres modelos de ML):
+> Al levantar el backend con Docker, `start.sh` ya ejecuta automáticamente `backend/seed_completo.py`, dejando precargada la cuenta `demo@finsmart.co` / `demo1234` (además de `carlos@finsmart.co` y `lucia@finsmart.co`) con ~6 meses de transacciones, un grupo de gastos compartidos, presupuestos y metas de ahorro.
+
+El script de abajo agrega un dataset alternativo sobre el mismo usuario `demo@finsmart.co`, pensado específicamente para poner en evidencia el comportamiento de los tres modelos de ML (usado normalmente en instalaciones manuales, sin Docker):
 
 ```bash
 cd backend
