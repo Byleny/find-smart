@@ -216,7 +216,11 @@ def _build_features(transactions) -> tuple[np.ndarray, list]:
 def train_anomaly_model(user_id: int, transactions) -> bool:
     """
     Entrena Isolation Forest con los gastos históricos.
-    contamination=0.08 → espera que ~8 % de los gastos sean anómalos.
+    contamination=0.02 → tasa de contaminación ajustada a la proporción real
+    de anomalías observada en el historial de demostración (4 de 208, 1.92%),
+    en lugar del valor por defecto de 8% usado inicialmente, que no se apoyaba
+    en ninguna medición y penalizaba la precisión marcando gastos grandes pero
+    legítimos (ver Sección 3.1.2.4 de la tesis).
     Retorna True si se entrenó correctamente.
     """
     expenses = [t for t in transactions if t.type == "gasto"]
@@ -227,7 +231,7 @@ def train_anomaly_model(user_id: int, transactions) -> bool:
 
     iso = IsolationForest(
         n_estimators=200,
-        contamination=0.08,
+        contamination=0.02,
         max_samples="auto",
         random_state=42,
         n_jobs=-1,
@@ -411,10 +415,10 @@ def compare_anomaly_models(user_id: int, transactions) -> Optional[list]:
 
     candidates = [
         ("Isolation Forest", IsolationForest(
-            n_estimators=200, contamination=0.08, random_state=42, n_jobs=-1,
+            n_estimators=200, contamination=0.02, random_state=42, n_jobs=-1,
         )),
         ("Local Outlier Factor", LocalOutlierFactor(
-            n_neighbors=20, contamination=0.08,
+            n_neighbors=20, contamination=0.02,
         )),
     ]
 

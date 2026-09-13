@@ -1,12 +1,19 @@
 """
 Script de datos de demostración — FinSmart
-Crea un usuario demo con 4 meses de transacciones realistas (Colombia/Cali)
+Crea un usuario demo con ~4 meses de transacciones realistas (Colombia/Cali)
 diseñadas para que los tres modelos ML sean claramente visibles:
-  · Random Forest   → sugiere categorías (dataset variado, accuracy ~88-93%)
-  · Isolation Forest → marca los gastos inusuales
-  · DBSCAN          → detecta patrones recurrentes
+  · Regresión Logística → sugiere categorías (208 gastos, 6 clases, accuracy ~86.5%)
+  · Isolation Forest    → marca los gastos inusuales
+  · DBSCAN              → detecta patrones recurrentes
+
+El dataset combina 95 gastos "ancla" con comercios que se repiten varias
+veces (eso es lo que da señal real de texto al clasificador) más 4
+anomalías plantadas a propósito, y un relleno de comercios adicionales
+(random.seed(42), reproducible) hasta completar 208 gastos — el mismo
+tamaño de muestra usado en la comparación experimental de la tesis.
 """
 
+import random
 from datetime import date, timedelta
 from database import SessionLocal
 from models import User, Transaction
@@ -152,6 +159,55 @@ gastos = [
     ("Cine Colombia",            350_000, "Entretenimiento", ago(21)),  # evento especial ⚠️
     ("Droguería Cruz Verde",     280_000, "Salud",           ago(55)),  # cirugía ⚠️
 ]
+
+# ── Relleno reproducible hasta completar 208 gastos ───────────────────────────
+# Comercios adicionales que se repiten varias veces (misma lógica que arriba:
+# la repetición es lo que le da señal real de texto al clasificador), más
+# unos pocos gastos únicos para variedad. random.seed(42) para que el
+# resultado sea siempre el mismo, igual que en la comparación de modelos
+# de la tesis (Sección 3.1.2.4).
+random.seed(42)
+
+filler_merchants = [
+    ("Panadería San José", "Alimentación", 6_000, 6),
+    ("Asadero El Buen Sabor", "Alimentación", 26_000, 5),
+    ("Almacén D1", "Alimentación", 32_000, 6),
+    ("Heladería Popsy", "Alimentación", 9_000, 5),
+    ("El Corral", "Alimentación", 27_000, 5),
+    ("Peaje autopista", "Transporte", 15_000, 6),
+    ("Lavado de carro", "Transporte", 18_000, 5),
+    ("DiDi", "Transporte", 13_000, 6),
+    ("Bus intermunicipal", "Transporte", 24_000, 5),
+    ("Plan de datos Tigo", "Servicios", 35_000, 6),
+    ("TV por cable", "Servicios", 60_000, 5),
+    ("Seguro vehículo", "Servicios", 85_000, 5),
+    ("HBO Max", "Entretenimiento", 24_900, 6),
+    ("Bar con amigos", "Entretenimiento", 45_000, 5),
+    ("Videojuego Steam", "Entretenimiento", 30_000, 5),
+    ("Fisioterapia", "Salud", 40_000, 6),
+    ("Óptica La Visión", "Salud", 55_000, 5),
+    ("Consulta nutricionista", "Salud", 70_000, 5),
+    ("Detergente y aseo", "Vivienda", 22_000, 6),
+    ("Gasodomésticos repuesto", "Vivienda", 38_000, 5),
+]
+
+filler_unique = [
+    ("Mueble segunda mano", "Vivienda", 130_000),
+]
+
+for _name, _cat, _base_amount, _reps in filler_merchants:
+    _days_used = set()
+    _step = 120 // _reps
+    for _k in range(_reps):
+        _day = min(119, max(0, _step * _k + random.randint(-3, 3)))
+        while _day in _days_used:
+            _day += 1
+        _days_used.add(_day)
+        _amount = _base_amount + random.randint(-2000, 2000)
+        gastos.append((_name, _amount, _cat, ago(_day)))
+
+for _name, _cat, _amount in filler_unique:
+    gastos.append((_name, _amount, _cat, ago(random.randint(0, 119))))
 
 ingresos = [
     ("Salario octubre",    3_200_000, "Salario",   ago(115)),

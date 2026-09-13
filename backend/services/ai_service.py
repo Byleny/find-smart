@@ -1,30 +1,46 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, timedelta
 from typing import List
 
 import numpy as np
+from sklearn.cluster import DBSCAN
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 from schemas import PatternResult, TrendResult
 
 
 def detect_patterns(transactions) -> List[PatternResult]:
     """
-    Detects recurring expense patterns by grouping on exact description (case-insensitive)
-    and measuring temporal regularity with the coefficient-of-variation confidence metric.
-    Confidence = max(0, 1 - std/mean) of inter-occurrence intervals in days.
+    Detects recurring expense patterns by clustering transaction descriptions with
+    DBSCAN over a TF-IDF representation of character n-grams (cosine distance), and
+    measuring temporal regularity within each cluster with the coefficient-of-variation
+    confidence metric. Confidence = max(0, 1 - std/mean) of inter-occurrence intervals.
+
+    DBSCAN (eps=0.55 <-> similitud coseno >= 0.45, min_samples=3) agrupa descripciones
+    similares en vez de exigir coincidencia exacta, de modo que variaciones menores de
+    texto (p. ej. "Netflix" vs "Netflix suscripción") se reconocen como el mismo servicio.
     """
     expenses = [t for t in transactions if t.type == "gasto"]
-    if len(expenses) < 2:
+    if len(expenses) < 3:
         return []
 
-    # Group by exact description (normalized to lowercase)
-    groups: dict[str, list] = defaultdict(list)
-    for t in expenses:
-        groups[t.description.lower().strip()].append(t.date)
+    descriptions = [t.description.lower().strip() for t in expenses]
+
+    vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4))
+    vectors = vectorizer.fit_transform(descriptions)
+
+    clustering = DBSCAN(eps=0.55, min_samples=3, metric="cosine").fit(vectors)
+    labels = clustering.labels_
+
+    groups: dict[int, list] = defaultdict(list)
+    for t, desc, label in zip(expenses, descriptions, labels):
+        if label == -1:
+            continue  # ruido: no forma parte de un patron recurrente
+        groups[label].append((t.date, desc))
 
     results = []
-    for desc, dates in groups.items():
-        cluster_dates = sorted(dates)
+    for label, entries in groups.items():
+        cluster_dates = sorted(d for d, _ in entries)
 
         if len(cluster_dates) < 3:
             continue
@@ -42,10 +58,13 @@ def detect_patterns(transactions) -> List[PatternResult]:
 
         confidence = max(0.0, 1.0 - (std_iv / mean_iv)) if mean_iv > 0 else 0.0
 
+        # nombre representativo: la descripcion mas frecuente dentro del cluster
+        service_name = Counter(d for _, d in entries).most_common(1)[0][0]
+
         results.append(
             PatternResult(
                 service_id=None,
-                service_name=desc,
+                service_name=service_name,
                 detected_day=int(round(mean_iv)),
                 confidence=round(confidence, 3),
                 next_predicted_date=max(cluster_dates) + timedelta(days=int(round(mean_iv))),
