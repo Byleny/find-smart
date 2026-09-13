@@ -9,7 +9,7 @@ Aplicación de finanzas personales desarrollada como proyecto de tesis. Permite 
 - **Presupuestos** por categoría con alertas.
 - **Metas de ahorro** con seguimiento de aportes.
 - **Gastos compartidos** entre grupos de usuarios (división y liquidación de saldos).
-- **Servicios recurrentes y facturas**: registro de contratos de servicios (EMCALI, Claro, Movistar, Tigo, Celsia, GDO). Para GDO, consulta automática del monto y la fecha de vencimiento mediante scraping/RPA del portal, con generación del enlace de pago PSE; para el resto de proveedores se lleva al usuario directo a su portal oficial para consultar y pagar (la automatización se abandonó para esos portales por bloqueos de reCAPTCHA/Cloudflare).
+- **Servicios recurrentes y facturas**: registro de contratos de servicios (EMCALI, Claro, Movistar, Tigo, Celsia, GDO). Para GDO, consulta automática del monto y la fecha de vencimiento mediante scraping/RPA del portal, con generación del enlace de pago PSE. EMCALI y Claro también tienen automatización probada de punta a punta (reCAPTCHA resuelto vía 2Captcha o retransmitido al usuario), pero se dejó fuera del flujo principal por la poca confiabilidad del paso final de confirmación (demoras de hasta minutos o rechazos intermitentes sin causa clara); Movistar sí quedó bloqueado de forma permanente por Cloudflare Turnstile. En estos tres casos, y en Tigo/Celsia, se lleva al usuario directo a su portal oficial para consultar y pagar.
 - **Notificaciones** por correo (invitaciones a grupos, confirmación de pago, alertas de presupuesto).
 - **Inteligencia Artificial / ML** (`backend/services/ai_service.py`, `backend/services/ml_service.py`):
   - Regresión Logística para sugerir categorías de gastos.
@@ -20,7 +20,7 @@ Aplicación de finanzas personales desarrollada como proyecto de tesis. Permite 
 
 - **Backend**: FastAPI + SQLAlchemy + SQLite, autenticación JWT, scikit-learn para los modelos de ML.
 - **Frontend**: Next.js (App Router) + TypeScript + Tailwind CSS + Radix UI.
-- **Infraestructura**: Docker / docker-compose para desarrollo y producción (Vercel para el frontend, Render/VM para el backend).
+- **Infraestructura**: Docker / docker-compose para desarrollo y producción. En producción, backend y frontend corren como dos contenedores en la misma VM (`docker-compose.prod.yml`): el frontend se publica en el puerto asignado por el hosting (5016) y el backend queda solo accesible internamente en la red de docker-compose, a través del proxy de rewrites de Next.js — sin proxy reverso propio; dominio/SSL se manejan fuera del repositorio.
 
 ## Estructura del proyecto
 
