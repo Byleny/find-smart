@@ -11,7 +11,6 @@ const _geistMono = Geist_Mono({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: 'FinSmart - Tu Asistente Financiero Inteligente',
   description: 'Gestiona tus finanzas personales de forma inteligente con FinSmart',
-  generator: 'v0.app',
   icons: {
     icon: [
       {
