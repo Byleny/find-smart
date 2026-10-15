@@ -5,6 +5,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from database import Base
+from politica import POLITICA_VERSION
 
 
 class User(Base):
@@ -20,11 +21,18 @@ class User(Base):
     identification_number = Column(String, nullable=True)
     address = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Autorización para el tratamiento de datos (Ley 1581): versión aceptada y cuándo.
+    politica_version = Column(String, nullable=True)
+    politica_aceptada_en = Column(DateTime, nullable=True)
 
     transactions = relationship("Transaction", back_populates="user")
     budgets = relationship("Budget", back_populates="user")
     saving_goals = relationship("SavingGoal", back_populates="user")
     recurring_services = relationship("RecurringService", back_populates="user")
+
+    @property
+    def politica_pendiente(self) -> bool:
+        return self.politica_version != POLITICA_VERSION
 
 
 class Transaction(Base):

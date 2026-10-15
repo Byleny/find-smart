@@ -1,6 +1,6 @@
 from datetime import date as _date, datetime
 from typing import Annotated, Literal, Optional, List
-from pydantic import BaseModel, EmailStr, ConfigDict, Field
+from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator
 
 # Los montos de dinero deben ser positivos; el signo lo da el tipo de transacción.
 MontoPositivo = Annotated[float, Field(gt=0)]
@@ -23,6 +23,15 @@ class UserRegister(BaseModel):
     # bcrypt solo toma en cuenta los primeros 72 bytes, por eso el tope.
     password: str = Field(min_length=8, max_length=72)
     full_name: str = Field(min_length=1, max_length=120)
+    # Autorización previa, expresa e informada para el tratamiento de datos (Ley 1581).
+    acepta_politica: bool
+
+    @field_validator("acepta_politica")
+    @classmethod
+    def _debe_aceptar_politica(cls, valor: bool) -> bool:
+        if valor is not True:
+            raise ValueError("Debes aceptar la política de tratamiento de datos para crear la cuenta.")
+        return valor
 
 
 class AccountDeleteRequest(BaseModel):
@@ -57,6 +66,9 @@ class UserResponse(UserBase):
     identification_number: Optional[str] = None
     address: Optional[str] = None
     created_at: Optional[datetime] = None
+    politica_pendiente: bool = True
+    politica_version: Optional[str] = None
+    politica_aceptada_en: Optional[datetime] = None
 
 
 # ── Transaction ───────────────────────────────────────────────────────────────

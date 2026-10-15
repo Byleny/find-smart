@@ -15,9 +15,11 @@ import {
   LogOut,
   Search,
   Menu,
-  X
+  X,
+  Loader2
 } from "lucide-react"
 import { NotificationBell } from "@/components/finsmart/notification-bell"
+import { PoliticaGate } from "@/components/finsmart/politica-gate"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useState } from "react"
@@ -37,11 +39,23 @@ const navigation = [
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const { user, logout } = useAuth()
+  const { user, isLoading, logout } = useAuth()
 
   const initials = user?.full_name
     ? user.full_name.split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase()
     : "??"
+
+  // Hasta saber si el usuario aceptó la política no se muestra nada que consulte sus datos.
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+  if (user?.politica_pendiente) {
+    return <PoliticaGate />
+  }
 
   return (
     <div className="min-h-screen bg-background">

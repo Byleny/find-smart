@@ -54,7 +54,7 @@ def medir(fn):
 
 def test_RNF_01_tiempos_de_respuesta_con_208_transacciones(client):
     email = "rendimiento@finsmart.co"
-    r = client.post("/auth/register", json={"email": email, "password": "ClaveSegura123", "full_name": "Perf"})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": email, "password": "ClaveSegura123", "full_name": "Perf"})
     headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
     sembrar_historial(email)
 

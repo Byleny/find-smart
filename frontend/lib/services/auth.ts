@@ -1,16 +1,17 @@
 import api from "@/lib/api"
-import type { User, AuthResponse, UserProfileUpdate } from "@/lib/types"
+import type { User, AuthResponse, UserProfileUpdate, PoliticaDatos } from "@/lib/types"
 
 export const authService = {
   async register(
     email: string,
     password: string,
-    full_name: string
+    full_name: string,
+    acepta_politica: boolean
   ): Promise<{ access_token: string; user: User }> {
     try {
       const response = await api.post<{ access_token: string; user: User }>(
         "/auth/register",
-        { email, password, full_name }
+        { email, password, full_name, acepta_politica }
       )
       return response.data
     } catch (error) {
@@ -40,6 +41,16 @@ export const authService = {
     } catch (error) {
       throw error
     }
+  },
+
+  async politica(): Promise<PoliticaDatos> {
+    const response = await api.get<PoliticaDatos>("/auth/politica")
+    return response.data
+  },
+
+  async aceptarPolitica(): Promise<User> {
+    const response = await api.post<User>("/auth/politica/aceptar")
+    return response.data
   },
 
   async updateProfile(data: UserProfileUpdate): Promise<User> {

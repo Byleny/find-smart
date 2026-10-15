@@ -52,7 +52,7 @@ def client():
 
 def registrar(client, email=None, password="ClaveSegura123", nombre="Usuario Prueba"):
     email = email or f"user_{uuid.uuid4().hex[:8]}@finsmart.co"
-    r = client.post("/auth/register", json={"email": email, "password": password, "full_name": nombre})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": email, "password": password, "full_name": nombre})
     assert r.status_code == 201, r.text
     token = r.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}, email

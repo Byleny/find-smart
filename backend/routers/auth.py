@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -19,6 +19,7 @@ from security import (
     ALGORITHM,
     limitador_login,
 )
+from politica import POLITICA_VERSION, datos_de_la_politica
 from services.ml_service import delete_user_models
 from routers.shared import leave_all_groups_for_user
 from jose import JWTError, jwt
@@ -65,6 +66,8 @@ async def register(payload: UserRegister, db: Session = Depends(get_db)):
         email=payload.email,
         hashed_password=hashed_password,
         full_name=payload.full_name,
+        politica_version=POLITICA_VERSION,
+        politica_aceptada_en=datetime.utcnow(),
     )
     db.add(user)
     db.commit()
@@ -104,6 +107,33 @@ async def login(
         expires_delta=timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS),
     )
     return Token(access_token=access_token, token_type="bearer")
+
+
+def exigir_politica_aceptada(current_user: User = Depends(_get_current_user)) -> None:
+    """Bloquea los datos del usuario mientras no haya aceptado la política vigente."""
+    if current_user.politica_pendiente:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Debes aceptar la política de tratamiento de datos para usar la plataforma.",
+        )
+
+
+@router.get("/politica")
+async def get_politica():
+    return datos_de_la_politica()
+
+
+@router.post("/politica/aceptar", response_model=UserResponse)
+async def aceptar_politica(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_get_current_user),
+):
+    if current_user.politica_pendiente:
+        current_user.politica_version = POLITICA_VERSION
+        current_user.politica_aceptada_en = datetime.utcnow()
+        db.commit()
+        db.refresh(current_user)
+    return current_user
 
 
 @router.get("/me", response_model=UserResponse)

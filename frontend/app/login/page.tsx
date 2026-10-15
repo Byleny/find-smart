@@ -5,6 +5,7 @@ import Link from "next/link"
 import { Wallet, Eye, EyeOff, ArrowLeft, Loader2, Lock, Brain, AlertTriangle, RefreshCcw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Checkbox } from "@/components/ui/checkbox"
 import { useAuth } from "@/contexts/auth-context"
 
 const D = "#0F1117"
@@ -58,6 +59,7 @@ export default function LoginPage() {
   const [phase, setPhase] = useState<Phase>("idle")
   const [shaking, setShaking] = useState(false)
   const [formData, setFormData] = useState({ email: "", password: "", name: "", confirmPassword: "" })
+  const [aceptaPolitica, setAceptaPolitica] = useState(false)
   const switchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const isPrivate = focusedField === "password" || focusedField === "confirmPassword"
@@ -99,12 +101,17 @@ export default function LoginPage() {
       triggerShake()
       return
     }
+    if (!isLogin && !aceptaPolitica) {
+      setError("Debes aceptar la política de tratamiento de datos para crear la cuenta")
+      triggerShake()
+      return
+    }
     setIsLoading(true)
     try {
       if (isLogin) {
         await login(formData.email, formData.password)
       } else {
-        await register(formData.email, formData.password, formData.name)
+        await register(formData.email, formData.password, formData.name, aceptaPolitica)
       }
     } catch (err: unknown) {
       const axErr = err as { response?: { data?: { detail?: string } }; request?: unknown }
@@ -293,6 +300,22 @@ export default function LoginPage() {
                     {...fieldProps("confirmPassword")} required />
                 </div>
               </div>
+            )}
+
+            {!isLogin && (
+              <label className="flex items-start gap-2.5 text-sm" style={{ color: D }}>
+                <Checkbox
+                  checked={aceptaPolitica}
+                  onCheckedChange={(v) => setAceptaPolitica(v === true)}
+                  className="mt-0.5"
+                />
+                <span>
+                  He leído y acepto la{" "}
+                  <a href="/privacidad" target="_blank" rel="noopener noreferrer" className="font-semibold underline">
+                    política de tratamiento de datos personales
+                  </a>
+                </span>
+              </label>
             )}
 
             <Button type="submit" className="w-full h-11 font-bold mt-2 hover:opacity-90"

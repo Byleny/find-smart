@@ -4,7 +4,7 @@ Aplicación de finanzas personales desarrollada como proyecto de tesis. Permite 
 
 ## Funcionalidades principales
 
-- **Autenticación y usuarios**: registro, login con JWT.
+- **Autenticación y usuarios**: registro, login con JWT y autorización para el tratamiento de datos (Ley 1581 de 2012): el registro exige aceptar la política publicada en `/privacidad`, y una cuenta sin la versión vigente aceptada no accede a sus datos hasta aceptarla.
 - **Transacciones**: registro de ingresos y gastos, categorización.
 - **Presupuestos** por categoría con alertas.
 - **Metas de ahorro** con seguimiento de aportes.
@@ -89,7 +89,7 @@ python seed_demo.py
 
 ## Pruebas automatizadas
 
-La carpeta `backend/tests` contiene 84 pruebas (funcionales, de integración, de seguridad y unitarias del módulo de IA), con casos negativos y de límite. Corren sobre una base de datos temporal cifrada con SQLCipher, así que no tocan `finsmart.db` ni los modelos de `ml_models/`.
+La carpeta `backend/tests` contiene 87 pruebas (funcionales, de integración, de seguridad y unitarias del módulo de IA), con casos negativos y de límite. Corren sobre una base de datos temporal cifrada con SQLCipher, así que no tocan `finsmart.db` ni los modelos de `ml_models/`.
 
 ```bash
 cd backend
@@ -117,3 +117,4 @@ Ver `backend/.env.example` (backend) y `.env.example` (variables para `docker-co
 - **Sin enumeración de cuentas:** el registro y el inicio de sesión responden con mensajes genéricos y hacen la misma verificación bcrypt exista o no la cuenta. Agregar integrantes a grupos tiene un tope por usuario (`MIEMBROS_MAX_POR_HORA`, 20 por defecto), porque la invitación revela si el correo tiene cuenta.
 - **Contraseñas:** de 8 a 72 caracteres (bcrypt solo procesa los primeros 72 bytes).
 - **Errores internos:** se registran en el log del servidor y al cliente solo le llega un mensaje genérico.
+- **Política de tratamiento de datos:** la versión vigente está en `backend/politica.py` (cambiarla obliga a todos a aceptarla de nuevo). El responsable, el domicilio, el correo y el teléfono que muestra la página se pueden cambiar con `POLITICA_RESPONSABLE`, `POLITICA_DOMICILIO`, `POLITICA_CORREO` y `POLITICA_TELEFONO`.

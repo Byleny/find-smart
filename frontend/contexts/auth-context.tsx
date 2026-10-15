@@ -9,9 +9,10 @@ interface AuthContextType {
   user: User | null
   isLoading: boolean
   login: (email: string, password: string) => Promise<void>
-  register: (email: string, password: string, fullName: string) => Promise<void>
+  register: (email: string, password: string, fullName: string, aceptaPolitica: boolean) => Promise<void>
   logout: () => void
   refreshUser: () => Promise<void>
+  aceptarPolitica: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -55,12 +56,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function register(
     email: string,
     password: string,
-    fullName: string
+    fullName: string,
+    aceptaPolitica: boolean
   ): Promise<void> {
     const { access_token } = await authService.register(
       email,
       password,
-      fullName
+      fullName,
+      aceptaPolitica
     )
     localStorage.setItem("finsmart_token", access_token)
     document.cookie = `finsmart_token=${access_token}; path=/`
@@ -82,8 +85,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(u)
   }
 
+  async function aceptarPolitica(): Promise<void> {
+    const u = await authService.aceptarPolitica()
+    setUser(u)
+  }
+
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, register, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, isLoading, login, register, logout, refreshUser, aceptarPolitica }}>
       {children}
     </AuthContext.Provider>
   )

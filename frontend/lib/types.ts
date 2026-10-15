@@ -8,6 +8,18 @@ export interface User {
   identification_number?: string
   address?: string
   created_at: string
+  politica_pendiente: boolean
+  politica_version?: string | null
+  politica_aceptada_en?: string | null
+}
+
+export interface PoliticaDatos {
+  version: string
+  vigente_desde: string
+  responsable: string
+  domicilio: string
+  correo: string
+  telefono: string
 }
 
 export interface UserProfileUpdate {

@@ -121,7 +121,7 @@ def test_PF_SEG_10_registro_duplicado_tambien_calcula_el_hash(client, monkeypatc
     llamadas = []
     original = auth_router.get_password_hash
     monkeypatch.setattr(auth_router, "get_password_hash", lambda c: llamadas.append(1) or original(c))
-    r = client.post("/auth/register", json={"email": "ana@finsmart.co", "password": "x12345678", "full_name": "Ana 2"})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": "ana@finsmart.co", "password": "x12345678", "full_name": "Ana 2"})
     assert r.status_code == 400
     assert len(llamadas) == 1
 

@@ -1,7 +1,7 @@
 import os
 import traceback
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -21,6 +21,8 @@ with engine.connect() as _conn:
         "ALTER TABLE users ADD COLUMN phone TEXT",
         "ALTER TABLE users ADD COLUMN identification_type TEXT DEFAULT 'CC'",
         "ALTER TABLE users ADD COLUMN identification_number TEXT",
+        "ALTER TABLE users ADD COLUMN politica_version TEXT",
+        "ALTER TABLE users ADD COLUMN politica_aceptada_en DATETIME",
         "ALTER TABLE recurring_services ADD COLUMN payer_name TEXT",
         "ALTER TABLE recurring_services ADD COLUMN payer_id_type TEXT",
         "ALTER TABLE recurring_services ADD COLUMN payer_id_number TEXT",
@@ -112,13 +114,16 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
-app.include_router(transactions.router, prefix="/transactions", tags=["transactions"])
-app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
-app.include_router(saving_goals.router, prefix="/goals", tags=["goals"])
-app.include_router(shared.router, prefix="/shared", tags=["shared"])
-app.include_router(recurring.router, prefix="/recurring", tags=["recurring"])
-app.include_router(invoices.router, prefix="/invoices", tags=["invoices"])
-app.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
+# Sin la política de tratamiento de datos aceptada, solo quedan disponibles las rutas de /auth
+# (perfil, aceptar la política y eliminar la cuenta).
+_politica = [Depends(auth.exigir_politica_aceptada)]
+app.include_router(transactions.router, prefix="/transactions", tags=["transactions"], dependencies=_politica)
+app.include_router(budgets.router, prefix="/budgets", tags=["budgets"], dependencies=_politica)
+app.include_router(saving_goals.router, prefix="/goals", tags=["goals"], dependencies=_politica)
+app.include_router(shared.router, prefix="/shared", tags=["shared"], dependencies=_politica)
+app.include_router(recurring.router, prefix="/recurring", tags=["recurring"], dependencies=_politica)
+app.include_router(invoices.router, prefix="/invoices", tags=["invoices"], dependencies=_politica)
+app.include_router(notifications.router, prefix="/notifications", tags=["notifications"], dependencies=_politica)
 
 
 @app.exception_handler(Exception)

@@ -505,7 +505,7 @@ export default function LandingPage() {
             <span className="text-sm font-black text-white">FinSmart</span>
           </div>
           <div className="flex items-center gap-6">
-            {[["#caracteristicas","Características"],["#metricas","En números"]].map(([href, label]) => (
+            {[["#caracteristicas","Características"],["#metricas","En números"],["/privacidad","Política de datos"]].map(([href, label]) => (
               <a key={href} href={href} className="text-xs font-mono transition-colors"
                 style={{ color: "rgba(255,255,255,0.28)" }}
                 onMouseEnter={e => (e.currentTarget.style.color = "rgba(255,255,255,0.7)")}

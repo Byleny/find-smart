@@ -4,6 +4,7 @@ from datetime import timedelta
 from conftest import registrar, gasto
 from database import SessionLocal
 from models import User, Transaction
+from politica import POLITICA_VERSION
 from routers.auth import REGISTRO_NO_COMPLETADO
 from security import create_access_token
 
@@ -13,7 +14,7 @@ def login(client, email, password):
 
 
 def test_PF_AUT_01_registro_exitoso_retorna_token(client):
-    r = client.post("/auth/register", json={"email": "ana@finsmart.co", "password": "ClaveSegura123", "full_name": "Ana"})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": "ana@finsmart.co", "password": "ClaveSegura123", "full_name": "Ana"})
     assert r.status_code == 201
     assert r.json()["token_type"] == "bearer"
     assert r.json()["access_token"]
@@ -42,20 +43,20 @@ def test_PF_AUT_04_login_no_distingue_correo_inexistente_de_contrasena_incorrect
 
 def test_PF_AUT_05_registro_con_correo_duplicado_es_rechazado(client):
     registrar(client, "ana@finsmart.co")
-    r = client.post("/auth/register", json={"email": "ana@finsmart.co", "password": "x12345678", "full_name": "Ana 2"})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": "ana@finsmart.co", "password": "x12345678", "full_name": "Ana 2"})
     assert r.status_code == 400
 
 
 def test_PF_AUT_06_registro_duplicado_no_revela_que_el_correo_existe(client):
     registrar(client, "ana@finsmart.co")
-    r = client.post("/auth/register", json={"email": "ana@finsmart.co", "password": "x12345678", "full_name": "Ana 2"})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": "ana@finsmart.co", "password": "x12345678", "full_name": "Ana 2"})
     detalle = r.json()["detail"]
     assert detalle == REGISTRO_NO_COMPLETADO
     assert not any(pista in detalle.lower() for pista in ("ya existe", "registrado", "already", "ana@finsmart.co"))
 
 
 def test_PF_AUT_07_registro_con_correo_invalido_es_rechazado(client):
-    r = client.post("/auth/register", json={"email": "no-es-un-correo", "password": "ClaveSegura123", "full_name": "Ana"})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": "no-es-un-correo", "password": "ClaveSegura123", "full_name": "Ana"})
     assert r.status_code == 422
 
 
@@ -108,20 +109,57 @@ def test_PF_AUT_13_eliminar_cuenta_borra_sus_datos(client):
 
 
 def test_PF_AUT_14_contrasena_de_menos_de_8_caracteres_es_rechazada(client):
-    r = client.post("/auth/register", json={"email": "ana@finsmart.co", "password": "Corta12", "full_name": "Ana"})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": "ana@finsmart.co", "password": "Corta12", "full_name": "Ana"})
     assert r.status_code == 422
-    r = client.post("/auth/register", json={"email": "ana@finsmart.co", "password": "Justa123", "full_name": "Ana"})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": "ana@finsmart.co", "password": "Justa123", "full_name": "Ana"})
     assert r.status_code == 201
 
 
 def test_PF_AUT_15_contrasena_de_mas_de_72_caracteres_es_rechazada(client):
-    r = client.post("/auth/register", json={"email": "ana@finsmart.co", "password": "a" * 73, "full_name": "Ana"})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": "ana@finsmart.co", "password": "a" * 73, "full_name": "Ana"})
     assert r.status_code == 422
 
 
 def test_PF_AUT_16_el_mismo_correo_con_otras_mayusculas_no_crea_otra_cuenta(client):
     registrar(client, "ana@finsmart.co", "ClaveSegura123")
-    r = client.post("/auth/register", json={"email": "Ana@Finsmart.co", "password": "OtraClave999", "full_name": "Ana 2"})
+    r = client.post("/auth/register", json={"acepta_politica": True, "email": "Ana@Finsmart.co", "password": "OtraClave999", "full_name": "Ana 2"})
     assert r.status_code == 400
     assert r.json()["detail"] == REGISTRO_NO_COMPLETADO
     assert login(client, "ANA@finsmart.co", "ClaveSegura123").status_code == 200
+
+
+def test_PF_AUT_17_registro_sin_aceptar_la_politica_es_rechazado(client):
+    base = {"email": "ana@finsmart.co", "password": "ClaveSegura123", "full_name": "Ana"}
+    assert client.post("/auth/register", json=base).status_code == 422
+    assert client.post("/auth/register", json={**base, "acepta_politica": False}).status_code == 422
+    r = client.post("/auth/register", json={**base, "acepta_politica": True})
+    assert r.status_code == 201
+    yo = client.get("/auth/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"}).json()
+    assert yo["politica_pendiente"] is False
+    assert yo["politica_version"] == POLITICA_VERSION
+    assert yo["politica_aceptada_en"]
+
+
+def test_PF_AUT_18_cuenta_sin_politica_aceptada_no_accede_a_sus_datos(client):
+    headers, email = registrar(client)
+    db = SessionLocal()
+    db.query(User).filter(User.email == email).update({"politica_version": None, "politica_aceptada_en": None})
+    db.commit()
+    db.close()
+    for ruta in ("/transactions", "/budgets", "/goals", "/shared/groups", "/recurring/patterns", "/notifications"):
+        assert client.get(ruta, headers=headers).status_code == 403, ruta
+    assert client.get("/auth/me", headers=headers).json()["politica_pendiente"] is True
+    aceptada = client.post("/auth/politica/aceptar", headers=headers)
+    assert aceptada.status_code == 200
+    assert aceptada.json()["politica_pendiente"] is False
+    assert client.get("/transactions", headers=headers).status_code == 200
+
+
+def test_PF_AUT_19_la_politica_es_publica_e_identifica_al_responsable(client, monkeypatch):
+    monkeypatch.setenv("POLITICA_CORREO", "datos@correo-prueba.co")
+    r = client.get("/auth/politica")
+    assert r.status_code == 200
+    datos = r.json()
+    assert datos["version"] == POLITICA_VERSION
+    assert datos["responsable"]
+    assert datos["correo"] == "datos@correo-prueba.co"
