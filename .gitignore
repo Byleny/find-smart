@@ -16,3 +16,8 @@ backend/.env
 # OS
 .DS_Store
 Thumbs.db
+
+# Evidencia de pruebas contra portales (capturas con datos personales, perfiles de Chrome)
+evidencias/corridas/
+evidencias/.perfiles/
+evidencias/.cache/
