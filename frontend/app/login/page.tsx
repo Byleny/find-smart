@@ -89,6 +89,11 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
+    if (!isLogin && formData.password.length < 8) {
+      setError("La contraseña debe tener al menos 8 caracteres")
+      triggerShake()
+      return
+    }
     if (!isLogin && formData.password !== formData.confirmPassword) {
       setError("Las contraseñas no coinciden")
       triggerShake()
@@ -106,8 +111,9 @@ export default function LoginPage() {
       const detail = axErr.response?.data?.detail
       if (!axErr.response) {
         setError("No se pudo conectar con el servidor. Verifica tu conexión e intenta de nuevo.")
-      } else if (detail === "Email already registered") {
-        setError("Ese correo ya está registrado. Inicia sesión en su lugar.")
+      } else if (detail === "No fue posible completar el registro con los datos ingresados.") {
+        // El backend no confirma si el correo ya existe; solo se sugiere la alternativa.
+        setError("No fue posible crear la cuenta. Si ya te registraste antes, inicia sesión.")
       } else if (detail === "Incorrect email or password") {
         setError("Correo o contraseña incorrectos.")
       } else if (typeof detail === "string" && detail.length > 0) {

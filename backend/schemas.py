@@ -1,6 +1,10 @@
 from datetime import date as _date, datetime
-from typing import Optional, List
-from pydantic import BaseModel, EmailStr, ConfigDict
+from typing import Annotated, Literal, Optional, List
+from pydantic import BaseModel, EmailStr, ConfigDict, Field
+
+# Los montos de dinero deben ser positivos; el signo lo da el tipo de transacción.
+MontoPositivo = Annotated[float, Field(gt=0)]
+TipoTransaccion = Literal["gasto", "ingreso"]
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -16,8 +20,9 @@ class TokenData(BaseModel):
 
 class UserRegister(BaseModel):
     email: EmailStr
-    password: str
-    full_name: str
+    # bcrypt solo toma en cuenta los primeros 72 bytes, por eso el tope.
+    password: str = Field(min_length=8, max_length=72)
+    full_name: str = Field(min_length=1, max_length=120)
 
 
 class AccountDeleteRequest(BaseModel):
@@ -65,14 +70,15 @@ class TransactionBase(BaseModel):
 
 
 class TransactionCreate(TransactionBase):
-    pass
+    amount: MontoPositivo
+    type: TipoTransaccion
 
 
 class TransactionUpdate(BaseModel):
     description: Optional[str] = None
-    amount: Optional[float] = None
+    amount: Optional[float] = Field(default=None, gt=0)
     category: Optional[str] = None
-    type: Optional[str] = None
+    type: Optional[TipoTransaccion] = None
     date: Optional[_date] = None
 
 
@@ -106,12 +112,12 @@ class BudgetBase(BaseModel):
 
 
 class BudgetCreate(BudgetBase):
-    pass
+    limit_amount: MontoPositivo
 
 
 class BudgetUpdate(BaseModel):
     category: Optional[str] = None
-    limit_amount: Optional[float] = None
+    limit_amount: Optional[float] = Field(default=None, gt=0)
     period: Optional[str] = None
 
 
@@ -134,14 +140,14 @@ class SavingGoalBase(BaseModel):
 
 
 class SavingGoalCreate(SavingGoalBase):
-    pass
+    target_amount: MontoPositivo
 
 
 class SavingGoalUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    target_amount: Optional[float] = None
-    current_amount: Optional[float] = None
+    target_amount: Optional[float] = Field(default=None, gt=0)
+    current_amount: Optional[float] = Field(default=None, ge=0)
     deadline: Optional[_date] = None
 
 
@@ -161,7 +167,7 @@ class SavingContributionBase(BaseModel):
 
 
 class SavingContributionCreate(SavingContributionBase):
-    pass
+    amount: MontoPositivo
 
 
 class SavingContributionResponse(SavingContributionBase):
@@ -232,6 +238,7 @@ class SharedExpenseBase(BaseModel):
 
 
 class SharedExpenseCreate(SharedExpenseBase):
+    amount: MontoPositivo
     splits: Optional[List[SharedExpenseSplitCreate]] = None
 
 
@@ -268,7 +275,7 @@ class SharedGroupResponse(SharedGroupBase):
 
 class FundContributionCreate(BaseModel):
     member_id: int
-    amount: float
+    amount: MontoPositivo
     note: Optional[str] = None
     date: Optional[_date] = None
 
@@ -403,14 +410,12 @@ class InvoiceResponse(BaseModel):
     fetched_at: datetime
     is_paid: bool
     paid_at: Optional[datetime] = None
-    qr_data: Optional[str] = None
 
 
 class InvoiceResult(BaseModel):
     amount: float
     due_date: _date
     reference: str
-    qr_base64: str
     service_name: str
     payment_url: str = ""
     is_demo: bool = False
@@ -459,7 +464,6 @@ class InvoiceLookupResult(BaseModel):
     amount: float
     due_date: str
     reference: str
-    qr_base64: str
     service_name: str
     provider: str
     payment_url: str = ""

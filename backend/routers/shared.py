@@ -28,7 +28,7 @@ from schemas import (
     FundStatus,
     FundMemberContrib,
 )
-from security import oauth2_scheme, SECRET_KEY, ALGORITHM
+from security import oauth2_scheme, SECRET_KEY, ALGORITHM, limitador_miembros
 from jose import JWTError, jwt
 
 router = APIRouter()
@@ -141,6 +141,16 @@ async def add_member(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
     if not _is_creator(group, current_user.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo el creador puede agregar miembros")
+
+    clave_limite = str(current_user.id)
+    espera = limitador_miembros.segundos_de_bloqueo(clave_limite)
+    if espera:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Agregaste demasiados miembros en poco tiempo. Intenta de nuevo más tarde.",
+            headers={"Retry-After": str(espera)},
+        )
+    limitador_miembros.registrar_intento(clave_limite)
 
     existing = db.query(SharedGroupMember).filter(
         SharedGroupMember.group_id == group_id,

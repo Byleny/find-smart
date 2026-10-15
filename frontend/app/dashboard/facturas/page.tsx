@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { useRouter } from "next/navigation"
 import {
-  Zap, Plus, Trash2, QrCode, ExternalLink, Copy, Check,
+  Zap, Plus, Trash2, ExternalLink, Copy, Check,
   Loader2, AlertCircle, CheckCircle2, RefreshCw, FileText,
   CalendarClock, DollarSign, Hash, Info, ChevronDown, PartyPopper, ShieldAlert,
   Settings, Pencil, CreditCard, Building2,
@@ -97,7 +97,6 @@ export default function FacturasPage() {
   // Invoice result dialog
   const [activeResult, setActiveResult] = useState<InvoiceResult | null>(null)
   const [activeContractId, setActiveContractId] = useState<number | null>(null)
-  const [showQr, setShowQr] = useState(false)
 
   // Delete confirmation
   const [deleteId, setDeleteId] = useState<number | null>(null)
@@ -622,7 +621,7 @@ export default function FacturasPage() {
 
       {/* ── Invoice result dialog ── */}
       <Dialog
-        open={activeResult !== null && !showQr}
+        open={activeResult !== null}
         onOpenChange={(open) => { if (!open) { setActiveResult(null); setActiveContractId(null) } }}
       >
         <DialogContent className="max-w-md">
@@ -812,25 +811,15 @@ export default function FacturasPage() {
                 <Separator />
 
                 {/* Actions */}
-                <div className="space-y-2">
-                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">
-                    ¿Cómo deseas pagar?
-                  </p>
-                  <div className={`grid gap-2 ${activeResult.qr_base64 && activeResult.payment_url ? "grid-cols-2" : "grid-cols-1"}`}>
-                    {activeResult.qr_base64 && (
+                {activeResult.payment_url && (
+                  <>
+                    <div className="space-y-2">
+                      <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">
+                        ¿Cómo deseas pagar?
+                      </p>
                       <Button
                         variant="outline"
-                        className="h-auto flex-col py-3 gap-1"
-                        onClick={() => setShowQr(true)}
-                      >
-                        <QrCode className="w-5 h-5" />
-                        <span className="text-xs">QR con datos de la factura</span>
-                      </Button>
-                    )}
-                    {activeResult.payment_url && (
-                      <Button
-                        variant="outline"
-                        className="h-auto flex-col py-3 gap-1"
+                        className="w-full h-auto flex-col py-3 gap-1"
                         asChild
                       >
                         <a href={activeResult.payment_url} target="_blank" rel="noopener noreferrer">
@@ -838,11 +827,11 @@ export default function FacturasPage() {
                           <span className="text-xs">Portal del proveedor</span>
                         </a>
                       </Button>
-                    )}
-                  </div>
-                </div>
+                    </div>
 
-                <Separator />
+                    <Separator />
+                  </>
+                )}
 
                 {/* Register payment */}
                 {registeredFor === activeContractId ? (
@@ -864,43 +853,6 @@ export default function FacturasPage() {
                 )}
               </div>
             )
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* ── QR dialog ── */}
-      <Dialog open={showQr} onOpenChange={(open) => { if (!open) setShowQr(false) }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Datos de la factura — {activeResult?.service_name}</DialogTitle>
-            <DialogDescription>
-              Escanea este código para copiar el monto y la referencia sin errores, y complétalos tú mismo al pagar en tu banco.
-            </DialogDescription>
-          </DialogHeader>
-          {activeResult && (
-            <div className="flex flex-col items-center gap-4 py-2">
-              <img
-                src={`data:image/png;base64,${activeResult.qr_base64}`}
-                alt="QR de pago"
-                className="w-56 h-56 rounded-lg border border-border bg-white"
-              />
-              <div className="text-center space-y-1 w-full">
-                <p className="text-2xl font-bold">{formatCOP(activeResult.amount)}</p>
-                <p className="text-sm text-muted-foreground">Vence: {String(activeResult.due_date)}</p>
-                <div className="flex items-center justify-center gap-1 text-xs text-muted-foreground font-mono">
-                  <span className="truncate max-w-[200px]">{activeResult.reference}</span>
-                  <CopyButton text={activeResult.reference} />
-                </div>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full"
-                onClick={() => setShowQr(false)}
-              >
-                Volver a opciones de pago
-              </Button>
-            </div>
           )}
         </DialogContent>
       </Dialog>

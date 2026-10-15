@@ -13,6 +13,6 @@ beautifulsoup4==4.12.3
 requests==2.32.3
 patchright
 playwright-stealth==1.0.6
-qrcode[pil]==8.0
 Pillow==11.0.0
 httpx==0.27.2
+sqlcipher3-wheels==0.5.5.post0

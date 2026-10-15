@@ -266,7 +266,7 @@ async def ml_train(
     db: Session = Depends(get_db),
     current_user: User = Depends(_get_current_user),
 ):
-    """Entrena Random Forest (categorías) e Isolation Forest (anomalías) con los datos del usuario."""
+    """Entrena Regresión Logística (categorías) e Isolation Forest (anomalías) con los datos del usuario."""
     from services.ml_service import train_category_model, train_anomaly_model
     txns = db.query(Transaction).filter(Transaction.user_id == current_user.id).all()
     cat_metrics = train_category_model(current_user.id, txns)
@@ -285,7 +285,7 @@ async def ml_suggest(
     db: Session = Depends(get_db),
     current_user: User = Depends(_get_current_user),
 ):
-    """Predice la categoría para una descripción usando el modelo Random Forest del usuario."""
+    """Predice la categoría para una descripción usando el modelo de Regresión Logística del usuario."""
     from services.ml_service import predict_category, train_category_model
     result = predict_category(current_user.id, description)
     if result is None:

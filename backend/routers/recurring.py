@@ -16,7 +16,6 @@ from schemas import (
 from security import oauth2_scheme, SECRET_KEY, ALGORITHM
 from jose import JWTError, jwt
 from services.scraper_service import fetch_invoice as scraper_fetch
-from services.qr_service import generate_payment_qr
 from services.ai_service import detect_patterns, predict_next_payment
 
 router = APIRouter()
@@ -131,19 +130,10 @@ async def fetch_invoice_endpoint(
             detail="No se pudo consultar la factura en este momento.",
         )
 
-    qr_base64 = generate_payment_qr(
-        service_name=service.name,
-        provider=service.provider,
-        reference=result.reference,
-        amount=result.amount,
-        due_date=str(result.due_date),
-    )
-
     invoice = Invoice(
         service_id=service.id,
         amount=result.amount,
         due_date=result.due_date,
-        qr_data=qr_base64,
     )
     db.add(invoice)
 
@@ -155,7 +145,6 @@ async def fetch_invoice_endpoint(
         amount=result.amount,
         due_date=result.due_date,
         reference=result.reference,
-        qr_base64=qr_base64,
         service_name=service.name,
     )
 

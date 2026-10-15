@@ -299,7 +299,6 @@ export interface InvoiceResult {
   amount: number
   due_date: string
   reference: string
-  qr_base64: string
   service_name: string
   payment_url: string
   is_demo: boolean
@@ -404,7 +403,6 @@ export interface InvoiceLookupResult {
   amount: number
   due_date: string
   reference: string
-  qr_base64: string
   service_name: string
   provider: string
   payment_url: string

@@ -6,15 +6,18 @@ Tres modelos complementarios, seleccionados tras comparación experimental con C
 1. CategoryClassifier  — Regresión Logística + TF-IDF (supervisado)
    Tarea  : predecir la categoría de una transacción a partir de su descripción.
    Por qué: seleccionada tras comparar 5 candidatos (NaiveBayes, LogisticRegression,
-             LinearSVC, RF baseline, RF+char TF-IDF) con CV-5. LR alcanzó 90.9 %
-             de exactitud, empatando con NB pero con probabilidades mejor calibradas
-             y menor varianza (±0.028 vs ±0.055 del RF). Los modelos lineales
-             superan a los de árbol en texto de alta dimensión con datasets pequeños.
+             LinearSVC, RF baseline, RF+char TF-IDF) con CV-5 sobre el historial de
+             demostración (208 gastos). LR y NB empataron en 86.5 % de exactitud y
+             F1 0.857; las diferencias entre los tres modelos lineales quedan dentro
+             de la desviación entre particiones, así que se eligió LR porque entrega
+             probabilidades mejor calibradas para la confianza que ve el usuario.
 
 2. AnomalyDetector    — Isolation Forest (no supervisado)
    Tarea  : detectar gastos inusualmente altos o bajos respecto al historial.
-   Por qué: seleccionado al comparar con Local Outlier Factor. IF obtuvo mayor
-             F1 (0.37 vs 0.30) al detectar anomalías sobre los datos de demostración.
+   Por qué: comparado con Local Outlier Factor, Elliptic Envelope y One-Class SVM.
+             Con contaminación de 2 % empató con LOF y Elliptic Envelope (F1 0.889);
+             se prefirió por no depender de densidad local ni de suponer una
+             distribución gaussiana, y por su menor costo de entrenamiento.
 
 3. PatternDetector    — TF-IDF + DBSCAN  (en ai_service.py, se mantiene)
    Tarea  : agrupar transacciones con descripciones similares y analizar
@@ -63,7 +66,7 @@ def _text(description: str) -> str:
     return description.lower().strip()
 
 
-# ── 1. Random Forest — clasificación de categorías ────────────────────────────
+# ── 1. Regresión Logística — clasificación de categorías ──────────────────────
 
 def train_category_model(user_id: int, transactions) -> Optional[dict]:
     """
@@ -71,8 +74,8 @@ def train_category_model(user_id: int, transactions) -> Optional[dict]:
     de tipo 'gasto' del usuario.
 
     Modelo seleccionado tras comparar 5 candidatos con CV-5 estratificada:
-    LogisticRegression alcanzó 90.9 % de exactitud, la mayor entre los modelos
-    evaluados, con la menor varianza entre particiones (±0.028).
+    LogisticRegression alcanzó 86.5 % de exactitud (±0.055), empatada con
+    Naive Bayes, y se prefirió por sus probabilidades mejor calibradas.
 
     Retorna métricas de evaluación o None si no hay suficientes datos.
     """

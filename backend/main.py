@@ -123,11 +123,17 @@ app.include_router(notifications.router, prefix="/notifications", tags=["notific
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
+    # El detalle completo queda en el log del servidor; al cliente solo le llega un mensaje
+    # genérico, porque el texto de la excepción puede traer SQL, rutas o datos internos.
     traceback.print_exc()
+    # Los errores no controlados se saltan el CORSMiddleware, así que la cabecera se agrega
+    # aquí, pero solo para los orígenes permitidos.
+    origen = request.headers.get("origin")
+    headers = {"Access-Control-Allow-Origin": origen} if origen in _cors_origins else {}
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)},
-        headers={"Access-Control-Allow-Origin": "*"},
+        content={"detail": "Ocurrió un error interno. Intenta de nuevo más tarde."},
+        headers=headers,
     )
 
 

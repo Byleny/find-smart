@@ -1,6 +1,6 @@
 # FinSmart
 
-Aplicación de finanzas personales desarrollada como proyecto de tesis. Permite registrar ingresos y gastos, definir presupuestos y metas de ahorro, gestionar gastos compartidos con otros usuarios, consultar y pagar automáticamente por PSE las facturas de GDO (Gases de Occidente), hacer seguimiento a otros servicios recurrentes (EMCALI, Claro, Movistar, Tigo, Celsia) enlazando directo a sus portales oficiales de pago, y aplica Machine Learning para ayudar al usuario a entender sus finanzas.
+Aplicación de finanzas personales desarrollada como proyecto de tesis. Permite registrar ingresos y gastos, definir presupuestos y metas de ahorro, gestionar gastos compartidos con otros usuarios, consultar las facturas de GDO (Gases de Occidente) y llegar a la pasarela PSE del banco con el valor ya cargado, hacer seguimiento a otros servicios recurrentes (EMCALI, Claro, Movistar, Tigo, Celsia) enlazando directo a sus portales oficiales de pago, y aplica Machine Learning para ayudar al usuario a entender sus finanzas.
 
 ## Funcionalidades principales
 
@@ -9,7 +9,7 @@ Aplicación de finanzas personales desarrollada como proyecto de tesis. Permite 
 - **Presupuestos** por categoría con alertas.
 - **Metas de ahorro** con seguimiento de aportes.
 - **Gastos compartidos** entre grupos de usuarios (división y liquidación de saldos).
-- **Servicios recurrentes y facturas**: registro de contratos de servicios (EMCALI, Claro, Movistar, Tigo, Celsia, GDO). Para GDO, consulta automática del monto y la fecha de vencimiento mediante scraping/RPA del portal, con generación del enlace de pago PSE. EMCALI y Claro también tienen automatización probada de punta a punta (reCAPTCHA resuelto vía 2Captcha o retransmitido al usuario), pero se dejó fuera del flujo principal por la poca confiabilidad del paso final de confirmación (demoras de hasta minutos o rechazos intermitentes sin causa clara); Movistar sí quedó bloqueado de forma permanente por Cloudflare Turnstile. En estos tres casos, y en Tigo/Celsia, se lleva al usuario directo a su portal oficial para consultar y pagar.
+- **Servicios recurrentes y facturas**: registro de contratos de servicios (EMCALI, Claro, Movistar, Tigo, Celsia, GDO). Para GDO, al pulsar *Consultar factura* el backend obtiene del portal el monto, la fecha de vencimiento y la referencia, y genera el enlace a la pasarela PSE del banco que elija el usuario. Antes de ese clic no se consulta nada, y la app nunca ejecuta pagos: el usuario los completa en su banco y luego puede reportarlos como gasto. EMCALI y Claro también tienen automatización probada de punta a punta (reCAPTCHA resuelto vía 2Captcha o retransmitido al usuario), pero se dejó fuera del flujo principal por la poca confiabilidad del paso final de confirmación (demoras de hasta minutos o rechazos intermitentes sin causa clara); Movistar sí quedó bloqueado de forma permanente por Cloudflare Turnstile. En estos tres casos, y en Tigo/Celsia, se lleva al usuario directo a su portal oficial para consultar y pagar.
 - **Notificaciones** por correo (invitaciones a grupos, confirmación de pago, alertas de presupuesto).
 - **Inteligencia Artificial / ML** (`backend/services/ai_service.py`, `backend/services/ml_service.py`):
   - Regresión Logística para sugerir categorías de gastos.
@@ -32,7 +32,7 @@ Aplicación de finanzas personales desarrollada como proyecto de tesis. Permite 
 │   ├── schemas.py           # Esquemas Pydantic
 │   ├── database.py          # Configuración de la base de datos
 │   ├── routers/              # Endpoints (auth, transactions, budgets, goals, shared, recurring, invoices, notifications)
-│   ├── services/              # Lógica de negocio, ML/IA y automatización de pagos
+│   ├── services/              # Lógica de negocio, ML/IA y consulta de facturas
 │   ├── ml_models/             # Modelos entrenados serializados
 │   └── seed_demo.py           # Script para poblar la base de datos con datos de demostración
 ├── frontend/                # Aplicación Next.js
@@ -87,6 +87,33 @@ cd backend
 python seed_demo.py
 ```
 
+## Pruebas automatizadas
+
+La carpeta `backend/tests` contiene 84 pruebas (funcionales, de integración, de seguridad y unitarias del módulo de IA), con casos negativos y de límite. Corren sobre una base de datos temporal cifrada con SQLCipher, así que no tocan `finsmart.db` ni los modelos de `ml_models/`.
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest
+```
+
+Todas pasan. La suite incluye los casos de seguridad descritos abajo (enumeración de cuentas, manejo de errores, clave JWT, bloqueo de intentos y cifrado).
+
 ## Variables de entorno
 
-Ver `backend/.env.example` (backend) y `.env.example` (variables para `docker-compose.prod.yml`). Como mínimo se requiere `SECRET_KEY`; el resto (SMTP, 2Captcha, etc.) es opcional y los flujos que dependen de ellas se omiten de forma segura si no están configuradas.
+Ver `backend/.env.example` (backend) y `.env.example` (variables para `docker-compose.prod.yml`). Como mínimo se requiere `SECRET_KEY` (32 caracteres o más; si falta, el backend usa una clave aleatoria por arranque y las sesiones se cierran al reiniciar); el resto (SMTP, 2Captcha, etc.) es opcional y los flujos que dependen de ellas se omiten de forma segura si no están configuradas.
+
+### Seguridad de la base de datos y del inicio de sesión
+
+- **Cifrado en reposo:** si se define `DB_ENCRYPTION_KEY`, la base SQLite se abre con SQLCipher (AES-256) y el archivo queda ilegible sin la clave. Para cifrar una base existente sin perder datos, con el backend detenido:
+
+  ```bash
+  cd backend
+  DB_ENCRYPTION_KEY=<clave> python cifrar_base_de_datos.py finsmart.db finsmart_cifrada.db
+  ```
+
+  El script verifica que la copia tenga las mismas filas; después se reemplaza el archivo original por la copia y se arranca el backend con la misma clave. Sin la clave, los datos no se pueden recuperar: guárdala fuera del servidor.
+- **Bloqueo de intentos:** tras 5 inicios de sesión fallidos sobre una misma cuenta en 15 minutos, esa cuenta responde HTTP 429 hasta que pasa la ventana (`LOGIN_MAX_INTENTOS` y `LOGIN_VENTANA_MINUTOS` lo ajustan).
+- **Sin enumeración de cuentas:** el registro y el inicio de sesión responden con mensajes genéricos y hacen la misma verificación bcrypt exista o no la cuenta. Agregar integrantes a grupos tiene un tope por usuario (`MIEMBROS_MAX_POR_HORA`, 20 por defecto), porque la invitación revela si el correo tiene cuenta.
+- **Contraseñas:** de 8 a 72 caracteres (bcrypt solo procesa los primeros 72 bytes).
+- **Errores internos:** se registran en el log del servidor y al cliente solo le llega un mensaje genérico.

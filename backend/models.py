@@ -218,7 +218,6 @@ class Invoice(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
     is_paid = Column(Boolean, default=False)
     paid_at = Column(DateTime, nullable=True)
-    qr_data = Column(Text, nullable=True)
 
     service = relationship("RecurringService", back_populates="invoices")
 

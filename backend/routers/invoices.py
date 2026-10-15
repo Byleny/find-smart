@@ -20,7 +20,6 @@ from services.scraper_service import (
     fetch_invoice as scraper_fetch, PROVIDERS_LIST, get_scraper,
     create_pse_session, get_pse_session,
 )
-from services.qr_service import generate_payment_qr
 
 router = APIRouter()
 
@@ -28,13 +27,13 @@ router = APIRouter()
 REAL_SCRAPER_IDS = {p["id"] for p in PROVIDERS_LIST if p.get("real_scraper")}
 
 # Proveedores que ya ofrecen un enlace de pago PSE real (redirección al
-# banco), en lugar de solo un QR informativo con los datos de la factura.
+# banco); para el resto se lleva al usuario al portal oficial del proveedor.
 # Movistar quedó fuera: su automatización de pago (services/movistar_pse.py)
 # dependía de un portal protegido con Cloudflare Turnstile, que bloquea la
 # instrumentación de Playwright/patchright sin importar quién interactúe con
 # ella (se comprobó incluso con clics genuinos de una persona real vía
 # escritorio remoto) — no hay enlace PSE real que ofrecer, así que Movistar
-# vuelve al mismo caso que EMCALI/EPM/Codensa: solo el QR informativo.
+# vuelve al mismo caso que EMCALI/EPM/Codensa: enlace al portal oficial.
 _PSE_PROVIDERS = {"gdo"}
 
 
@@ -203,24 +202,11 @@ async def fetch_contract_invoice(
     except Exception as exc:
         raise _error_portal(f"Error al consultar el portal de {svc.provider.upper()}.", exc)
 
-    # GDO ya ofrece un enlace de pago PSE real (botón "Pagar con PSE" en la
-    # tarjeta del contrato); el QR ahí es redundante. Para el resto (EMCALI,
-    # EPM, Codensa/Enel, Movistar), que no tienen un flujo PSE propio, el QR
-    # sigue siendo la única ayuda de pago.
-    if result.portal_blocked or result.is_up_to_date or svc.provider in _PSE_PROVIDERS:
-        qr_b64 = ""
-    else:
-        qr_b64 = await run_in_threadpool(
-            generate_payment_qr,
-            svc.name, svc.provider, result.reference, result.amount, str(result.due_date),
-        )
-
     if not result.portal_blocked:
         invoice = Invoice(
             service_id=svc.id,
             amount=result.amount,
             due_date=result.due_date,
-            qr_data=qr_b64,
         )
         db.add(invoice)
         svc.last_fetched_amount = result.amount if not result.is_up_to_date else None
@@ -231,7 +217,6 @@ async def fetch_contract_invoice(
         amount=result.amount,
         due_date=result.due_date,
         reference=result.reference,
-        qr_base64=qr_b64,
         service_name=svc.name,
         payment_url=result.payment_url,
         is_demo=result.is_demo,
@@ -264,19 +249,11 @@ async def lookup_invoice(
         raise _error_portal("Error al consultar el portal.", exc)
 
     service_name = payload.service_name or payload.provider.upper()
-    if payload.provider in _PSE_PROVIDERS:
-        qr_b64 = ""
-    else:
-        qr_b64 = await run_in_threadpool(
-            generate_payment_qr,
-            service_name, payload.provider, result.reference, result.amount, str(result.due_date),
-        )
 
     return InvoiceLookupResult(
         amount=result.amount,
         due_date=str(result.due_date),
         reference=result.reference,
-        qr_base64=qr_b64,
         service_name=service_name,
         provider=payload.provider,
         payment_url=result.payment_url,
@@ -341,12 +318,11 @@ async def pse_init(
     if data["is_up_to_date"]:
         svc.last_fetched_amount = None
     else:
-        # Sin QR: este flujo ya termina en pse-pay con un enlace real al banco.
+        # Este flujo termina en pse-pay con un enlace real al banco.
         db.add(Invoice(
             service_id=svc.id,
             amount=data["amount"],
             due_date=date.fromisoformat(data["due_date"]),
-            qr_data="",
         ))
         svc.last_fetched_amount = data["amount"]
     svc.last_fetched_at = datetime.utcnow()
@@ -432,14 +408,10 @@ async def _emcali_respuesta(
     vence     = datos.get("due_date") or str(date.today() + timedelta(days=15))
     referencia = datos.get("reference") or f"EMCALI-{svc.account_reference}"
 
-    qr_b64 = ""
     if not al_dia:
-        qr_b64 = await run_in_threadpool(
-            generate_payment_qr, svc.name, svc.provider, referencia, monto, vence,
-        )
         db.add(Invoice(
             service_id=svc.id, amount=monto,
-            due_date=date.fromisoformat(vence), qr_data=qr_b64,
+            due_date=date.fromisoformat(vence),
         ))
     svc.last_fetched_amount = None if al_dia else monto
     svc.last_fetched_at = datetime.utcnow()
@@ -451,7 +423,6 @@ async def _emcali_respuesta(
             amount=monto,
             due_date=date.fromisoformat(vence),
             reference=referencia,
-            qr_base64=qr_b64,
             service_name=svc.name,
             payment_url="https://pagos.emcali.com.co/pagosweb/checkout",
             is_up_to_date=al_dia,
@@ -623,7 +594,7 @@ async def claro_pse_init_status(
     amount = float(data.get("amount") or 0)
     due_date = data.get("due_date") or str(date.today() + timedelta(days=15))
     reference = data.get("reference") or f"CLARO-{svc.account_reference}"
-    db.add(Invoice(service_id=svc.id, amount=amount, due_date=date.today() + timedelta(days=15), qr_data=""))
+    db.add(Invoice(service_id=svc.id, amount=amount, due_date=date.today() + timedelta(days=15)))
     svc.last_fetched_amount = amount
     svc.last_fetched_at = datetime.utcnow()
     db.commit()
@@ -688,7 +659,7 @@ async def claro_pse_otp_status(
     amount = float(data.get("amount") or 0)
     due_date = data.get("due_date") or str(date.today() + timedelta(days=15))
     reference = data.get("reference") or f"CLARO-{svc.account_reference}"
-    db.add(Invoice(service_id=svc.id, amount=amount, due_date=date.today() + timedelta(days=15), qr_data=""))
+    db.add(Invoice(service_id=svc.id, amount=amount, due_date=date.today() + timedelta(days=15)))
     svc.last_fetched_amount = amount
     svc.last_fetched_at = datetime.utcnow()
     db.commit()
