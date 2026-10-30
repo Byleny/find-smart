@@ -202,7 +202,8 @@ def datos_isabel(isabel):
         db.add(Budget(user_id=isabel.id, category=cat, limit_amount=limite, period="monthly"))
 
     # Contratos de servicios: el GDO 610257 es real (consulta de verdad al
-    # portal); los demás se agregan solo si no existen ya.
+    # portal). Solo se crean en la primera corrida: si el contrato ya existió
+    # (aunque el usuario lo haya eliminado desde la app) no se vuelve a crear.
     contratos = [
         ("Gas casa", "gdo", "610257", "Servicios", 48_000, 10, "bylenosama@gmail.com"),
         ("Energía y agua EMCALI", "emcali", "562164", "Servicios", 185_000, 12, None),
@@ -211,11 +212,9 @@ def datos_isabel(isabel):
     for nombre, prov, ref, cat, estimado, corte, correo in contratos:
         existe = db.query(RecurringService).filter(
             RecurringService.user_id == isabel.id, RecurringService.provider == prov,
-            RecurringService.account_reference == ref, RecurringService.is_active == True,
-        ).first()
-        if existe:
-            existe.name = nombre
-        else:
+            RecurringService.account_reference == ref,
+        ).order_by(RecurringService.is_active.desc()).first()
+        if not existe:
             db.add(RecurringService(
                 user_id=isabel.id, name=nombre, provider=prov, account_reference=ref,
                 category=cat, estimated_amount=estimado, billing_day=corte,
