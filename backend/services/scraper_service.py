@@ -625,10 +625,15 @@ class GDOScraper(BaseScraper):
                     "datos": {"pesta_0_Digitar_número_de_contrato": account_reference},
                     "recaptcha_token": "",
                 }
-                r = client.post(
-                    f"{self.PROMIGAS_API}/continuar",
-                    params={"token": token}, headers=h_tok, json=body4, timeout=20,
-                )
+                try:
+                    r = client.post(
+                        f"{self.PROMIGAS_API}/continuar",
+                        params={"token": token}, headers=h_tok, json=body4, timeout=20,
+                    )
+                except httpx.TimeoutException:
+                    return _blocked(_GDO_CAIDO_MSG)
+                if r.status_code in (502, 503, 504):
+                    return _blocked(_GDO_CAIDO_MSG)
                 d4 = r.json() if r.status_code in (200, 500) else {}
                 if d4.get("error"):
                     msg4 = d4.get("mensaje", "")
@@ -747,16 +752,21 @@ class GDOScraper(BaseScraper):
             )
             token: str = r.json()["datos"]["access_token"]
 
-            r = client.post(
-                f"{self.PROMIGAS_API}/continuar",
-                params={"token": token}, headers=h_tok,
-                json={
-                    "pestana": 1,
-                    "datos": {"pesta_0_Digitar_número_de_contrato": account_reference},
-                    "recaptcha_token": "",
-                },
-                timeout=20,
-            )
+            try:
+                r = client.post(
+                    f"{self.PROMIGAS_API}/continuar",
+                    params={"token": token}, headers=h_tok,
+                    json={
+                        "pestana": 1,
+                        "datos": {"pesta_0_Digitar_número_de_contrato": account_reference},
+                        "recaptcha_token": "",
+                    },
+                    timeout=20,
+                )
+            except httpx.TimeoutException:
+                raise ValueError(_GDO_CAIDO_MSG)
+            if r.status_code in (502, 503, 504):
+                raise ValueError(_GDO_CAIDO_MSG)
             d4 = r.json() if r.status_code in (200, 500) else {}
             if d4.get("error"):
                 msg4 = d4.get("mensaje", "")

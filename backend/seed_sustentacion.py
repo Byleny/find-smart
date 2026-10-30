@@ -64,11 +64,13 @@ METAS = [
 GASTO_VARIABLE = (0.44, 0.38, 0.31, 0.26, 0.22, 0.19, 0.17)
 RITMO_AHORRO = (0.0, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4)
 
+# Categorías con presupuesto. El límite se calcula del gasto real de Isabel
+# (ver presupuestos_isabel) para que en el mes actual esté dentro de todos.
 PRESUPUESTOS = [
-    ("Alimentación", 650_000), ("Transporte", 320_000), ("Entretenimiento", 180_000),
-    ("Salud", 200_000), ("Compras", 350_000), ("Servicios", 150_000),
-    ("Gastos compartidos", 700_000),
+    "Alimentación", "Transporte", "Entretenimiento", "Salud", "Compras",
+    "Servicios", "Gastos compartidos",
 ]
+MARGEN_PRESUPUESTO = 1.2
 
 hoy = date.today()
 INICIO = date(hoy.year, hoy.month, 1)
@@ -146,7 +148,7 @@ def limpiar(usuarios):
     ).all():
         db.delete(meta)
     db.query(Budget).filter(
-        Budget.user_id.in_(ids), Budget.category.in_([p[0] for p in PRESUPUESTOS]),
+        Budget.user_id.in_(ids), Budget.category.in_(PRESUPUESTOS),
     ).delete(synchronize_session=False)
     db.flush()
 
@@ -197,9 +199,6 @@ def datos_isabel(isabel):
             db.add(SavingContribution(goal_id=meta.id, amount=monto, note="Aporte mensual", date=f))
             meta.current_amount += monto
             tx(isabel, f"Aporte meta: {nombre}", monto, "Ahorro", "gasto", f)
-
-    for cat, limite in PRESUPUESTOS:
-        db.add(Budget(user_id=isabel.id, category=cat, limit_amount=limite, period="monthly"))
 
     # Contratos de servicios: el GDO 610257 es real (consulta de verdad al
     # portal). Solo se crean en la primera corrida: si el contrato ya existió
@@ -345,6 +344,35 @@ def grupo_gastos(isabel, bylen):
             gasto("Mercado D1 para la casa", monto, "Alimentación", f, mi, monto // 2)
 
 
+# ── Presupuestos de Isabel ───────────────────────────────────────────────────
+
+def presupuestos_isabel(isabel):
+    """
+    Límite = el mayor entre el gasto del mes actual y el promedio de los tres
+    meses anteriores, más un 20 % de margen, redondeado a 50.000. Así el mes
+    actual queda dentro de todos sus presupuestos, como alguien que ya los
+    ajustó a su realidad. Va después de los grupos porque los pagos
+    compartidos también cuentan en "Gastos compartidos".
+    """
+    db.flush()
+    actual = date(hoy.year, hoy.month, 1)
+    anteriores = (actual - timedelta(days=1)).replace(day=1)
+    for _ in range(2):
+        anteriores = (anteriores - timedelta(days=1)).replace(day=1)
+    for cat in PRESUPUESTOS:
+        gastos = db.query(Transaction).filter(
+            Transaction.user_id == isabel.id, Transaction.type == "gasto",
+            Transaction.category == cat, Transaction.date >= anteriores,
+        ).all()
+        mes_actual = sum(t.amount for t in gastos if t.date >= actual)
+        promedio = sum(t.amount for t in gastos if t.date < actual) / 3
+        base = max(mes_actual, promedio)
+        if base <= 0:
+            continue
+        limite = -(-base * MARGEN_PRESUPUESTO // 50_000) * 50_000
+        db.add(Budget(user_id=isabel.id, category=cat, limit_amount=limite, period="monthly"))
+
+
 # ── Ejecución ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -356,6 +384,7 @@ def main():
     datos_bylen(bylen)
     grupo_fondo(isabel, elder)
     grupo_gastos(isabel, bylen)
+    presupuestos_isabel(isabel)
     db.commit()
 
     print(f"Historia desde {INICIO} hasta {hoy}.")
