@@ -67,7 +67,7 @@ RITMO_AHORRO = (0.0, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4)
 # Categorías con presupuesto. El límite se calcula del gasto real de Isabel
 # (ver presupuestos_isabel) para que en el mes actual esté dentro de todos.
 PRESUPUESTOS = [
-    "Alimentación", "Transporte", "Entretenimiento", "Salud", "Compras",
+    "Alimentación", "Transporte", "Créditos", "Entretenimiento", "Salud", "Compras",
     "Servicios", "Gastos compartidos",
 ]
 MARGEN_PRESUPUESTO = 1.2
@@ -157,11 +157,11 @@ def limpiar(usuarios):
 
 def datos_isabel(isabel):
     for y, m in meses():
-        for d in (14, 28):
-            if (f := dia(y, m, d)):
-                tx(isabel, "Pago nómina", 2_150_000, "Salario", "ingreso", f)
+        # Sueldo mensual, pagado el día 30 (o el último del mes).
+        if (f := dia(y, m, 30)):
+            tx(isabel, "Pago nómina", 4_300_000, "Salario", "ingreso", f)
         for desc, monto, cat, d in [
-            ("Cuota del carro", 780_000, "Transporte", 5),
+            ("Cuota del carro", 780_000, "Créditos", 5),
             ("Plan celular Claro", 52_900, "Servicios", 8),
             ("Gimnasio Smart Fit", 75_000, "Salud", 3),
             ("Spotify", 16_900, "Entretenimiento", 12),
@@ -183,14 +183,15 @@ def datos_isabel(isabel):
         ("Zara Unicentro", (90_000, 210_000), "Compras", 0.12),
     ], GASTO_VARIABLE)
 
-    # Metas: aportes mensuales hasta hoy (cada aporte también es una transacción).
+    # Metas: aporte el día 1, apenas llega el sueldo del mes anterior (cada
+    # aporte también es una transacción).
     for nombre, desc, objetivo, limite, mensual in METAS:
         meta = SavingGoal(user_id=isabel.id, name=nombre, description=desc,
                           target_amount=objetivo, current_amount=0, deadline=limite)
         db.add(meta)
         db.flush()
         for y, m in meses():
-            if not (f := dia(y, m, 15)):
+            if not (f := dia(y, m, 1)):
                 continue
             ritmo = RITMO_AHORRO[min(indice_mes(f), len(RITMO_AHORRO) - 1)]
             monto = min(round(mensual * ritmo, -3), objetivo - meta.current_amount)
@@ -246,9 +247,8 @@ def datos_elder(elder):
 
 def datos_bylen(bylen):
     for y, m in meses():
-        for d in (15, 31):
-            if (f := dia(y, m, d)):
-                tx(bylen, "Pago nómina", 1_650_000, "Salario", "ingreso", f)
+        if (f := dia(y, m, 30)):
+            tx(bylen, "Pago nómina", 1_900_000, "Salario", "ingreso", f)
         if (f := dia(y, m, 2)):
             tx(bylen, "Arriendo habitación", 650_000, "Vivienda", "gasto", f)
     gastos_variables(bylen, [
