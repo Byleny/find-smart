@@ -73,6 +73,20 @@ def _is_up_to_date(text: str) -> bool:
     return any(p in t for p in _UP_TO_DATE_PATTERNS)
 
 
+# GDO responde "Error consultando el saldo del cliente" (HTTP 500) para
+# cualquier contrato, exista o no, cuando su servicio de saldos está caído.
+# Contiene la palabra "cliente", así que hay que revisarlo antes del genérico
+# "no existe"/"cliente" para no reportarlo como contrato no encontrado.
+_GDO_CAIDO_MSG = (
+    "El portal de GDO no está respondiendo la consulta de saldo en este momento. "
+    "Intenta de nuevo en unos minutos."
+)
+
+
+def _gdo_caido(text: str) -> bool:
+    return "error consultando el saldo" in text.lower()
+
+
 def _parse_cop_amounts(text: str) -> list[float]:
     """Extrae montos COP >= $5.000 del texto. Soporta $1.234.567 y $1,234,567."""
     amounts = []
@@ -628,6 +642,8 @@ class GDOScraper(BaseScraper):
                             reference=f"GDO-{account_reference}", provider="gdo",
                             payment_url=self.PAYMENT_URL, is_up_to_date=True,
                         )
+                    if _gdo_caido(msg4):
+                        return _blocked(_GDO_CAIDO_MSG)
                     if "no existe" in msg4.lower() or "cliente" in msg4.lower():
                         return _blocked(
                             f"El contrato '{account_reference}' no fue encontrado en GDO. "
@@ -755,6 +771,8 @@ class GDOScraper(BaseScraper):
                         "reference": f"GDO-{account_reference}",
                         "is_up_to_date": True,
                     }
+                if _gdo_caido(msg4):
+                    raise ValueError(_GDO_CAIDO_MSG)
                 if "no existe" in msg4.lower() or "cliente" in msg4.lower():
                     raise CredentialsError(
                         f"GDO no encontró el contrato '{account_reference}'. "

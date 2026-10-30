@@ -52,12 +52,17 @@ GRUPO_FONDO = "Hogar Isabel y Elder"
 GRUPO_GASTOS = "Suscripciones y salidas"
 
 METAS = [
-    # (nombre, descripción, objetivo, fecha límite, aporte mensual)
-    ("Impuesto vehicular", "Impuesto del carro, vence en abril", 680_000, date(2027, 4, 30), 85_000),
-    ("Viaje enero", "Viaje a Cartagena en enero", 3_500_000, date(2027, 1, 10), 420_000),
-    ("SOAT", "Renovación del SOAT del carro", 520_000, date(2027, 2, 15), 60_000),
-    ("Fondo de emergencia", "Tres meses de gastos básicos", 6_000_000, date(2027, 6, 30), 250_000),
+    # (nombre, descripción, objetivo, fecha límite, aporte mensual base)
+    ("Impuesto vehicular", "Impuesto del carro, vence en abril", 680_000, date(2027, 4, 30), 110_000),
+    ("Viaje enero", "Viaje a Cartagena en enero", 3_500_000, date(2027, 1, 10), 450_000),
+    ("SOAT", "Renovación del SOAT del carro", 520_000, date(2027, 2, 15), 70_000),
+    ("Fondo de emergencia", "Tres meses de gastos básicos", 6_000_000, date(2027, 6, 30), 200_000),
 ]
+
+# Progreso de Isabel con la app, del primer mes al último: el gasto variable
+# baja a la mitad y los aportes a metas arrancan en el segundo mes y crecen.
+GASTO_VARIABLE = (0.44, 0.38, 0.31, 0.26, 0.22, 0.19, 0.17)
+RITMO_AHORRO = (0.0, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4)
 
 PRESUPUESTOS = [
     ("Alimentación", 650_000), ("Transporte", 320_000), ("Entretenimiento", 180_000),
@@ -108,12 +113,18 @@ def usuario(email, nombre):
     return u
 
 
+def indice_mes(f):
+    """Posición del mes de `f` dentro de la historia (0 = primer mes)."""
+    return (f.year - INICIO.year) * 12 + f.month - INICIO.month
+
+
 def gastos_variables(user, comercios, factor):
-    """Gastos del día a día con la misma frecuencia todos los meses."""
+    """Gastos del día a día. `factor` es un número o una tupla por mes."""
     f = INICIO
     while f <= hoy:
+        k = factor if isinstance(factor, float) else factor[min(indice_mes(f), len(factor) - 1)]
         for desc, (lo, hi), cat, prob in comercios:
-            if rng.random() < prob * factor:
+            if rng.random() < prob * k:
                 tx(user, desc, rng.randrange(lo // 100, hi // 100 + 1) * 100, cat, "gasto", f)
         f += timedelta(days=1)
 
@@ -144,7 +155,7 @@ def limpiar(usuarios):
 
 def datos_isabel(isabel):
     for y, m in meses():
-        for d in (15, 31):
+        for d in (14, 28):
             if (f := dia(y, m, d)):
                 tx(isabel, "Pago nómina", 2_150_000, "Salario", "ingreso", f)
         for desc, monto, cat, d in [
@@ -168,7 +179,7 @@ def datos_isabel(isabel):
         ("Cine Colombia", (20_000, 38_000), "Entretenimiento", 0.25),
         ("Falabella", (60_000, 220_000), "Compras", 0.2),
         ("Zara Unicentro", (90_000, 210_000), "Compras", 0.12),
-    ], 0.17)
+    ], GASTO_VARIABLE)
 
     # Metas: aportes mensuales hasta hoy (cada aporte también es una transacción).
     for nombre, desc, objetivo, limite, mensual in METAS:
@@ -177,11 +188,12 @@ def datos_isabel(isabel):
         db.add(meta)
         db.flush()
         for y, m in meses():
-            if not (f := dia(y, m, 16)):
+            if not (f := dia(y, m, 15)):
                 continue
-            monto = min(mensual, objetivo - meta.current_amount)
+            ritmo = RITMO_AHORRO[min(indice_mes(f), len(RITMO_AHORRO) - 1)]
+            monto = min(round(mensual * ritmo, -3), objetivo - meta.current_amount)
             if monto <= 0:
-                break
+                continue
             db.add(SavingContribution(goal_id=meta.id, amount=monto, note="Aporte mensual", date=f))
             meta.current_amount += monto
             tx(isabel, f"Aporte meta: {nombre}", monto, "Ahorro", "gasto", f)
@@ -192,7 +204,7 @@ def datos_isabel(isabel):
     # Contratos de servicios: el GDO 610257 es real (consulta de verdad al
     # portal); los demás se agregan solo si no existen ya.
     contratos = [
-        ("Gas apartamento", "gdo", "610257", "Servicios", 48_000, 10, "bylenosama@gmail.com"),
+        ("Gas casa", "gdo", "610257", "Servicios", 48_000, 10, "bylenosama@gmail.com"),
         ("Energía y agua EMCALI", "emcali", "562164", "Servicios", 185_000, 12, None),
         ("Plan celular", "claro", "3126266746", "Servicios", 52_900, 8, None),
     ]
@@ -201,7 +213,9 @@ def datos_isabel(isabel):
             RecurringService.user_id == isabel.id, RecurringService.provider == prov,
             RecurringService.account_reference == ref, RecurringService.is_active == True,
         ).first()
-        if not existe:
+        if existe:
+            existe.name = nombre
+        else:
             db.add(RecurringService(
                 user_id=isabel.id, name=nombre, provider=prov, account_reference=ref,
                 category=cat, estimated_amount=estimado, billing_day=corte,
@@ -329,7 +343,7 @@ def grupo_gastos(isabel, bylen):
         # Mercado pequeño que paga Isabel; Bylen pone la mitad.
         if (f := dia(y, m, 24)):
             monto = rng.randrange(450, 900) * 100
-            gasto("Mercado D1 para el apartamento", monto, "Alimentación", f, mi, monto // 2)
+            gasto("Mercado D1 para la casa", monto, "Alimentación", f, mi, monto // 2)
 
 
 # ── Ejecución ─────────────────────────────────────────────────────────────────
