@@ -122,6 +122,18 @@ export default function FacturasPage() {
   // que el pago se haya completado, no se registra el gasto automáticamente:
   // este flag solo controla cuándo mostrar el botón para reportarlo a mano.
   const [pseLinkOpened, setPseLinkOpened] = useState(false)
+  // Resultado que devuelve la pasarela simulada (app/pse-simulado) al volver.
+  const [pagoSimulado, setPagoSimulado] = useState<{ cus: string; banco: string } | null>(null)
+
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      if (e.origin !== window.location.origin) return
+      if (e.data?.tipo !== "finsmart-pse-simulado" || e.data?.estado !== "aprobado") return
+      setPagoSimulado({ cus: String(e.data.cus), banco: String(e.data.banco) })
+    }
+    window.addEventListener("message", onMessage)
+    return () => window.removeEventListener("message", onMessage)
+  }, [])
 
   // ── Load data ───────────────────────────────────────────────────────────────
 
@@ -365,6 +377,17 @@ export default function FacturasPage() {
         date: new Date().toISOString().split("T")[0],
       })
       setRegisteredFor(activeContractId)
+      // Tras pagar, el contrato queda al día: se refleja en la tarjeta como en
+      // una consulta sin saldo pendiente.
+      setFetchStates((prev) => ({
+        ...prev,
+        [activeContractId]: { contractId: activeContractId, status: "done", isUpToDate: true },
+      }))
+      setContracts((prev) =>
+        prev.map((c) =>
+          c.id === activeContractId ? { ...c, last_fetched_amount: undefined } : c
+        )
+      )
     } finally {
       setRegistering(false)
     }
@@ -946,6 +969,7 @@ export default function FacturasPage() {
           setPseError("")
           setPseSession(null)
           setPseLinkOpened(false)
+          setPagoSimulado(null)
         }
       }}>
         <DialogContent className="max-w-sm">
@@ -1027,15 +1051,31 @@ export default function FacturasPage() {
                   {/* Tras abrir la pasarela: reportar el gasto es una acción
                       aparte, no automática — entrar a PSE no significa que
                       el pago se haya completado. */}
-                  <div className="flex items-start gap-1.5 text-muted-foreground text-xs">
-                    <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                    Abrimos la pasarela de tu banco en una pestaña nueva. Cuando termines
-                    de pagar, repórtalo aquí para llevar el registro en tus transacciones.
-                  </div>
+                  {pagoSimulado ? (
+                    <div className="rounded-xl bg-primary/10 p-3 space-y-1">
+                      <div className="flex items-center gap-2 text-primary text-sm font-semibold">
+                        <CheckCircle2 className="w-4 h-4" />
+                        Pago aprobado por {pagoSimulado.banco}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        CUS <span className="font-mono text-foreground">{pagoSimulado.cus}</span>.
+                        Repórtalo para llevar el registro en tus transacciones.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-1.5 text-muted-foreground text-xs">
+                      <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                      Abrimos la pasarela de tu banco en una pestaña nueva. Cuando termines
+                      de pagar, repórtalo aquí para llevar el registro en tus transacciones.
+                    </div>
+                  )}
                   {registeredFor === activeContractId ? (
-                    <div className="flex items-center gap-2 text-primary text-sm justify-center py-2">
-                      <CheckCircle2 className="w-4 h-4" />
-                      Gasto reportado
+                    <div className="flex flex-col items-center gap-1 text-primary text-sm py-2 text-center">
+                      <CheckCircle2 className="w-5 h-5" />
+                      <span className="font-semibold">Gasto reportado · ¡Estás al día!</span>
+                      <span className="text-xs text-muted-foreground font-normal">
+                        Registramos el pago en tus transacciones y tu factura queda al día.
+                      </span>
                     </div>
                   ) : (
                     <Button

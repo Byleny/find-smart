@@ -30,6 +30,9 @@ services:
       # services/claro_pse.py). Vacio en dev: ese flujo especifico se
       # bloquea sin romper el resto de la plataforma.
       TWOCAPTCHA_API_KEY: ${TWOCAPTCHA_API_KEY:-}
+      # 1 = simula el pago GDO (bancos y enlace PSE marcados como simulación)
+      # para demostrar el flujo cuando el contrato está al día.
+      GDO_SIMULAR_PAGO: ${GDO_SIMULAR_PAGO:-}
     command: ["sh", "start.sh", "--reload"]
     restart: unless-stopped
 

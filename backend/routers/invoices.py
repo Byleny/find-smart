@@ -1,5 +1,7 @@
+import os
 from datetime import date, datetime, timedelta
 from typing import List, Optional
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -35,6 +37,23 @@ REAL_SCRAPER_IDS = {p["id"] for p in PROVIDERS_LIST if p.get("real_scraper")}
 # escritorio remoto) — no hay enlace PSE real que ofrecer, así que Movistar
 # vuelve al mismo caso que EMCALI/EPM/Codensa: enlace al portal oficial.
 _PSE_PROVIDERS = {"gdo"}
+
+# Simulación del pago GDO para demostrar el flujo cuando el contrato está al
+# día (GDO no devuelve bancos ni enlace PSE sin saldo pendiente). Se activa con
+# GDO_SIMULAR_PAGO=1 en el .env; todo lo que devuelve va marcado como demo.
+_SIMULAR_PAGO_GDO = os.getenv("GDO_SIMULAR_PAGO", "") == "1"
+# Referencias GDO reales que SIEMPRE usan el flujo verdadero del portal, aunque
+# la simulación esté activa (ej. el contrato 610257 de bylenosama, que existe y
+# consulta de verdad). El resto de contratos GDO se simulan en modo demo.
+_REFERENCIAS_GDO_REALES = {
+    r.strip() for r in os.getenv("GDO_REFERENCIAS_REALES", "610257").split(",") if r.strip()
+}
+_JWT_SIMULADO = "simulado"
+_BANCOS_SIMULADOS = [
+    ("1007", "BANCOLOMBIA"), ("1051", "DAVIVIENDA"), ("1001", "BANCO DE BOGOTA"),
+    ("1013", "BBVA COLOMBIA"), ("1023", "BANCO DE OCCIDENTE"), ("1507", "NEQUI"),
+    ("1002", "BANCO POPULAR"), ("1032", "BANCO CAJA SOCIAL"),
+]
 
 
 def _error_portal(mensaje_publico: str, exc: Exception, status_code: int = 502) -> HTTPException:
@@ -288,6 +307,22 @@ async def pse_init(
     if svc.provider != "gdo":
         raise HTTPException(status_code=400, detail="Solo contratos GDO soportan pago PSE.")
 
+    if _SIMULAR_PAGO_GDO and svc.account_reference not in _REFERENCIAS_GDO_REALES:
+        # Modo demostración: no se consulta el portal ni se guarda la factura.
+        # La respuesta va marcada con is_demo para que la interfaz lo avise.
+        # Las referencias reales (ver _REFERENCIAS_GDO_REALES) se saltan esto.
+        monto = 87_450
+        session_id = create_pse_session(_JWT_SIMULADO, contract_id, monto)
+        return PSEInitResponse(
+            session_id=session_id,
+            banks=[PSEBank(code=c, name=n) for c, n in _BANCOS_SIMULADOS],
+            amount=monto,
+            due_date=str(date.today() + timedelta(days=12)),
+            reference=f"GDO-SIM-{svc.account_reference}",
+            is_up_to_date=False,
+            is_demo=True,
+        )
+
     # Sin fallback al perfil FinSmart: GDO valida el correo del titular del
     # contrato, que puede ser otra persona (ej. un contrato familiar).
     email = svc.payer_email or ""
@@ -358,6 +393,14 @@ async def pse_pay(
     session = get_pse_session(payload.session_id)
     if not session or session["contract_id"] != contract_id:
         raise HTTPException(status_code=400, detail="Sesión PSE expirada. Inicia el proceso nuevamente.")
+
+    if session["jwt"] == _JWT_SIMULADO:
+        banco = dict(_BANCOS_SIMULADOS).get(payload.bank_code, "")
+        params = urlencode({
+            "banco": banco, "monto": int(session["amount"]),
+            "ref": f"GDO-SIM-{svc.account_reference}",
+        })
+        return PSEPayResponse(pse_url=f"/pse-simulado?{params}")
 
     from services.scraper_service import GDOScraper
     scraper = GDOScraper()

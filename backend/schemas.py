@@ -505,6 +505,7 @@ class PSEInitResponse(BaseModel):
     due_date: str
     reference: str
     is_up_to_date: bool = False
+    is_demo: bool = False
 
 
 # ── PSE Payment (Movistar): sondeo en segundo plano ───────────────────────────

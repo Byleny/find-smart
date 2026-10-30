@@ -367,6 +367,7 @@ export interface PSEInitResponse {
   due_date: string
   reference: string
   is_up_to_date: boolean
+  is_demo?: boolean
 }
 
 export interface PSEPayRequest {

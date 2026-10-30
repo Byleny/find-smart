@@ -28,6 +28,10 @@ services:
       EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-FinSmart}
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
       TWOCAPTCHA_API_KEY: ${TWOCAPTCHA_API_KEY:-}
+      # 1 = simula el pago de los contratos GDO que no están en
+      # GDO_REFERENCIAS_REALES (por defecto 610257, que consulta de verdad).
+      GDO_SIMULAR_PAGO: ${GDO_SIMULAR_PAGO:-}
+      GDO_REFERENCIAS_REALES: ${GDO_REFERENCIAS_REALES:-610257}
     command: ["sh", "start.sh"]
     restart: unless-stopped
 
